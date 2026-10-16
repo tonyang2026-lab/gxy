@@ -1,5 +1,5 @@
 const cheerio = require('cheerio');
-const HOSTS = { US: 'www.amazon.com', UK: 'www.amazon.co.uk', DE: 'www.amazon.de', FR: 'www.amazon.fr', JP: 'www.amazon.co.jp' };
+const HOSTS = { US: 'www.amazon.com', UK: 'www.amazon.co.uk', DE: 'www.amazon.de', FR: 'www.amazon.fr', JP: 'www.amazon.co.jp', AE: 'www.amazon.ae', SA: 'www.amazon.sa' };
 function asin(value) {
   const text = String(value || '').trim();
   const match = text.match(/(?:\/dp\/|\/gp\/product\/)([A-Z0-9]{10})(?:[/?]|$)/i);
@@ -19,8 +19,9 @@ function price($, scope) {
   const fraction = clean(box.find('.a-price-fraction').first().text());
   const symbol = clean(box.find('.a-price-symbol').first().text());
   const text = full || (whole ? `${symbol}${whole.replace(/[.,]$/, '')}${fraction ? '.' + fraction : ''}` : '');
-  const currency = /US\$|USD/.test(text) ? 'USD' : /S\$|SGD/.test(text) ? 'SGD' : /CA\$|CDN\$|CAD/.test(text) ? 'CAD' : /A\$|AUD/.test(text) ? 'AUD' : /£/.test(text) ? 'GBP' : /€/.test(text) ? 'EUR' : /￥|¥|JPY/.test(text) ? 'JPY' : /\$/.test(text) ? 'UNKNOWN_DOLLAR' : null;
-  let raw = text.replace(/[^\d.,]/g, '');
+  const currency = /\bAED\b|د\s*\.?\s*إ/i.test(text) ? 'AED' : /\bSAR\b|ر\s*\.?\s*س|﷼/i.test(text) ? 'SAR' : /US\$|USD/.test(text) ? 'USD' : /S\$|SGD/.test(text) ? 'SGD' : /CA\$|CDN\$|CAD/.test(text) ? 'CAD' : /A\$|AUD/.test(text) ? 'AUD' : /£/.test(text) ? 'GBP' : /€/.test(text) ? 'EUR' : /￥|¥|JPY/.test(text) ? 'JPY' : /\$/.test(text) ? 'UNKNOWN_DOLLAR' : null;
+  const normalized = text.replace(/[٠-٩]/g, d => String(d.charCodeAt(0) - 0x660)).replace(/[۰-۹]/g, d => String(d.charCodeAt(0) - 0x6f0)).replace(/٫/g, '.').replace(/٬/g, '');
+  let raw = normalized.match(/\d[\d.,]*/)?.[0] || '';
   if (raw.includes(',') && raw.includes('.')) raw = raw.lastIndexOf(',') > raw.lastIndexOf('.') ? raw.replace(/\./g, '').replace(',', '.') : raw.replace(/,/g, '');
   else if (/,\d{2}$/.test(raw) && currency !== 'JPY') raw = raw.replace(',', '.');
   else raw = raw.replace(/,/g, '');

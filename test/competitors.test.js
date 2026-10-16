@@ -75,3 +75,18 @@ test('BSR parser preserves ranks and detail page discovers a provided BSR link',
   assert.equal(rows[0].asin, 'B000000002'); assert.equal(rows[0].rank, 12);
   assert.equal(P.detail(target + '<a href="/gp/bestsellers/appliances/123/ref=zg_bs_nav">See bestsellers</a>').bsrPath, '/gp/bestsellers/appliances/123/ref=zg_bs_nav');
 });
+test('Middle East prices preserve currencies and Arabic decimal values', () => {
+  for (const [text, currency, amount] of [['AED 1,299.50', 'AED', 1299.5], ['SAR 89.95', 'SAR', 89.95], ['د.إ ١٬٢٩٩٫٥٠', 'AED', 1299.5], ['ر.س ٨٩٫٩٥', 'SAR', 89.95]]) {
+    const result = P.detail(target.replace('$99.99', text));
+    assert.equal(result.currency, currency); assert.equal(result.price, amount);
+  }
+});
+test('Middle East collection routes exclusively to selected marketplace', async () => {
+  for (const [marketplace, hostname] of [['AE', 'www.amazon.ae'], ['SA', 'www.amazon.sa']]) {
+    const job = Pipeline.init({ ...input, marketplace, limit: 1 }, 'middle-east');
+    const urls = [];
+    await Pipeline.run(job, { request: async url => { urls.push(url); return { ok: true, text: async () => url.includes('/s?') ? search : target }; }, save() {}, wait: async () => {} });
+    assert.equal(job.status, 'complete');
+    assert.ok(urls.length >= 3); assert.ok(urls.every(url => new URL(url).hostname === hostname));
+  }
+});
