@@ -31,6 +31,11 @@
     return box;
   }
   fields.forEach(f => get(`schedule-${f}`).onchange = () => { invalidate(); persist(); });
+  get('my-work-hours').onclick = () => {
+    const hours = { start: '09:30', end: '18:00', lunchStart: '12:00', lunchEnd: '14:00' };
+    for (const [field, value] of Object.entries(hours)) get(`schedule-${field}`).value = value;
+    get('schedule-lunch').checked = true; invalidate(); persist();
+  };
   get('schedule-lunch').onchange = () => { invalidate(); persist(); };
   window.scheduleUI = {
     controls, invalidate,
