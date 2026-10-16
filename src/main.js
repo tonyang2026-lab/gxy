@@ -5,6 +5,6 @@ app.whenReady().then(() => {
   win.loadFile(path.join(__dirname, 'index.html'));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', e => e.preventDefault());
-  require('./competitors/service').register({ app, ipcMain, session, dialog, win });
+  require('./competitors/service').register({ app, ipcMain, session, dialog, win, BrowserWindow });
 });
 app.on('window-all-closed', () => app.quit());

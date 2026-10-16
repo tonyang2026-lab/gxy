@@ -31,7 +31,7 @@
   get('form').onsubmit = async e => {
     e.preventDefault(); get('start').disabled = true;
     try {
-      jobId = await api.start({ asin: get('asin').value, marketplace: get('market').value, keywords: get('keywords').value, pages: Number(get('pages').value), limit: Number(get('limit').value) });
+      jobId = await api.start({ asin: get('asin').value, marketplace: get('market').value, keywords: get('keywords').value, pages: Number(get('pages').value), limit: Number(get('limit').value), browserMode: get('browser-mode').checked });
       await poll();
     } catch(e) { status(e.message); get('start').disabled = false; }
   };

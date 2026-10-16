@@ -3,10 +3,13 @@ const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 const Pipeline = require('./pipeline');
 const { workbook } = require('./export');
-function register({ app, ipcMain, session, dialog, win }) {
+const { createBrowserReader } = require('./browser');
+function register({ app, ipcMain, session, dialog, win, BrowserWindow }) {
   const root = path.join(app.getPath('userData'), 'competitors');
   fs.mkdirSync(root, { recursive: true });
   let active = null;
+  const browser = createBrowserReader({ BrowserWindow, session });
+  win.on('closed', () => { if (active) active.cancelled = true; browser.close(); });
   const idPath = id => { if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) throw new Error('任务编号无效'); return path.join(root, id); };
   function save(job) { const dir = idPath(job.id); fs.mkdirSync(dir, { recursive: true }); const file = path.join(dir, 'job.json'); fs.writeFileSync(file + '.tmp', JSON.stringify(job)); fs.renameSync(file + '.tmp', file); }
   function read(id) { return JSON.parse(fs.readFileSync(path.join(idPath(id), 'job.json'), 'utf8')); }
@@ -16,7 +19,9 @@ function register({ app, ipcMain, session, dialog, win }) {
     const transport = session.fromPartition('competitor-public');
     Pipeline.run(job, {
       request: async url => {
-        const response = await transport.fetch(url, { credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(30000) });
+        const response = job.options.browserMode !== false
+          ? await browser.request(url, job.options.marketplace)
+          : await transport.fetch(url, { credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(30000) });
         if (!response.ok) return response;
         const html = await response.text();
         if (Buffer.byteLength(html) > 12000000) throw new Error('页面超过12MB，已停止');

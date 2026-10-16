@@ -7,7 +7,7 @@ function options(input) {
   if (keywords.length > 5 || keywords.some(k => k.length > 100)) throw new Error('核心词最多5个，每个不超过100字符');
   const pages = Number(input.pages || 1), limit = Number(input.limit || 30);
   if (!Number.isInteger(pages) || pages < 1 || pages > 5 || !Number.isInteger(limit) || limit < 1 || limit > 150) throw new Error('搜索页数须为1～5，详情数量须为1～150');
-  return { asin: P.asin(input.asin), marketplace, keywords, pages, limit };
+  return { asin: P.asin(input.asin), marketplace, keywords, pages, limit, browserMode: input.browserMode !== false };
 }
 function init(input, id) { return { id, options: options(input), status: 'queued', target: null, queue: null, hits: [], details: {}, results: [], errors: [], createdAt: new Date().toISOString(), ruleVersion: RULE_VERSION }; }
 async function run(job, deps) {

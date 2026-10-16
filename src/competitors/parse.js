@@ -8,7 +8,7 @@ function asin(value) {
   return result;
 }
 function load(html) {
-  if (/validateCaptcha|automated access|robot check|bm-verify|enter the characters you see/i.test(html)) throw new Error('访问验证或机器人拦截：已停止，请在正常网络下稍后重试');
+  if (/validateCaptcha|automated access|robot check|bm-verify|enter the characters you see/i.test(html)) throw new Error('Amazon 返回验证页，已暂停。请在采集窗口手动完成验证，再回主窗口点击“继续”；如反复出现请停止采集');
   return cheerio.load(html);
 }
 const clean = text => text.replace(/\s+/g, ' ').trim();

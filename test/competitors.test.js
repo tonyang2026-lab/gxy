@@ -17,7 +17,7 @@ test('parses explicit price components without losing decimals or inventing curr
   assert.equal(P.detail(target).brand, 'Acme');
   const rows = P.listing(search, 'SEARCH', 'ice maker', 1);
   assert.equal(rows[0].price, 39.99); assert.equal(rows[0].currency, 'UNKNOWN_DOLLAR'); assert.equal(rows[1].price, null);
-  assert.throws(() => P.detail('<title>Robot Check</title>'), /拦截/);
+  assert.throws(() => P.detail('<title>Robot Check</title>'), /验证页/);
   assert.throws(() => P.listing('<html>No results</html>', 'SEARCH', '', 1), /未解析/);
 });
 test('dedup retains distinct search sources, excludes target and records page/card position', () => {
