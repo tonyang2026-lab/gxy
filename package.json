@@ -1,7 +1,7 @@
 {
   "name": "gxy",
   "version": "1.0.0",
-  "description": "小星 Windows AI 桌宠助手",
+  "description": "小星 Windows 本地陪伴桌宠",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
