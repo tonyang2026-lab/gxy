@@ -1,29 +1,34 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const P = require('../src/planner-state');
-function plan() { let p = P.empty(); for (const id of ['a', 'b']) p = P.change(p, { type: 'add', id, title: id, minutes: 1 }, 0); return p; }
-test('switching tasks preserves time, expiration requires explicit completion', () => {
-  let p = P.change(plan(), { type: 'start', id: 'a' }, 1000);
-  p = P.change(p, { type: 'start', id: 'b' }, 11000);
-  assert.equal(p.tasks[0].remaining, 50000);
-  p = P.change(p, { type: 'tick' }, 71000);
-  assert.equal(p.tasks[1].remaining, 0); assert.equal(p.tasks[1].done, false); assert.equal(p.deadline, null);
-  p = P.change(p, { type: 'done', id: 'b' }); assert.equal(p.activeId, null); assert.equal(p.tasks[1].done, true);
+function add(p, id = 'a') { return P.change(p, { type: 'add', id, title: `任务${id}` }).plan; }
+test('completion randomly rewards food exactly once, including after restoring', () => {
+  let result = P.change(add(P.empty()), { type: 'done', id: 'a' }, () => 0);
+  assert.equal(result.reward.name, '小饼干'); assert.equal(result.plan.tasks[0].done, true);
+  let p = P.restore(JSON.parse(JSON.stringify(result.plan)));
+  p = P.change(p, { type: 'done', id: 'a' }).plan;
+  result = P.change(p, { type: 'done', id: 'a' });
+  assert.equal(result.reward, null); assert.equal(result.plan.tasks[0].food, '小饼干');
 });
-test('paused and restored running plans retain progress across sessions', () => {
-  let p = P.change(plan(), { type: 'start', id: 'a' }, 1000);
-  p = P.restore(JSON.parse(JSON.stringify(p)));
-  assert.equal(p.deadline, 61000);
-  p = P.change(p, { type: 'pause' }, 21000); assert.equal(p.tasks[0].remaining, 40000);
-  p = P.change(p, { type: 'start', id: 'a' }, 30000); assert.equal(p.deadline, 70000);
-  p = P.change(p, { type: 'remove', id: 'a' }); assert.equal(p.deadline, null); assert.equal(p.activeId, null);
+test('food selection covers every food and tasks reward independently', () => {
+  let p = P.empty();
+  P.foods.forEach((food, i) => {
+    p = add(p, String(i));
+    const r = P.change(p, { type: 'done', id: String(i) }, () => (i + .5) / P.foods.length);
+    assert.equal(r.reward.name, food.name); p = r.plan;
+  });
 });
-test('reorder, validation, reset and undo completion', () => {
-  let p = plan();
-  p = P.change(p, { type: 'add', id: 'x', title: ' ', minutes: 0 }); assert.equal(p.tasks.length, 2);
-  p = P.change(p, { type: 'move', id: 'b', direction: -1 }); assert.equal(p.tasks[0].id, 'b');
-  p = P.change(p, { type: 'start', id: 'b' }, 0);
-  p = P.change(p, { type: 'restart', id: 'b' }, 10000); assert.equal(p.deadline, null); assert.equal(p.tasks[0].remaining, 60000);
-  p = P.change(p, { type: 'done', id: 'b' }); p = P.change(p, { type: 'done', id: 'b' }); assert.equal(p.tasks[0].done, false);
-  assert.deepEqual(P.restore({ tasks: [null, { id: 'bad' }] }), P.empty());
+test('old timed plans migrate without granting rewards for already completed tasks', () => {
+  const p = P.restore({ tasks: [{ id: 'a', title: '旧任务', minutes: 25, done: true }], activeId: 'a', deadline: 10000 });
+  assert.equal(p.deadline, undefined);
+  const reopened = P.change(p, { type: 'done', id: 'a' }).plan;
+  assert.equal(P.change(reopened, { type: 'done', id: 'a' }).reward, null);
+});
+test('reordering and invalid input do not grant food', () => {
+  let p = add(add(P.empty()), 'b');
+  let r = P.change(p, { type: 'move', id: 'b', direction: -1 });
+  assert.equal(r.plan.tasks[0].id, 'b'); assert.equal(r.reward, null);
+  r = P.change(r.plan, { type: 'add', id: 'x', title: ' ' }); assert.equal(r.plan.tasks.length, 2);
+  r = P.change(r.plan, { type: 'remove', id: 'a' }); assert.equal(r.plan.tasks.length, 1);
+  assert.deepEqual(P.restore({ tasks: [null, {}] }), P.empty());
 });
