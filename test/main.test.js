@@ -12,12 +12,12 @@ async function harness(t) {
     app: { whenReady: () => Promise.resolve(), getPath: () => dir, on() {}, quit() {} },
     BrowserWindow: class { constructor() { this.webContents = { setWindowOpenHandler() {}, on() {} }; } loadFile() {} },
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) }, globalShortcut: { register() {} },
+    net: { fetch: async (url, opts) => { requests.push({ url, opts }); return { ok: true, json: async () => ({ choices: [{ message: { content: '测试回答' } }] }) }; } },
     safeStorage: { isEncryptionAvailable: () => true, encryptString: s => Buffer.from(s), decryptString: b => b.toString() }
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/main.js'), 'utf8'), {
     require: name => name === 'electron' ? electron : require(name), __dirname: path.join(__dirname, '../src'),
-    URL, Buffer, AbortSignal, setTimeout,
-    fetch: async (url, opts) => { requests.push({ url, opts }); return { ok: true, json: async () => ({ choices: [{ message: { content: '测试回答' } }] }) }; }
+    URL, Buffer, AbortSignal, setTimeout
   });
   await Promise.resolve();
   return { call: (name, data) => handlers.get(name)(null, data), requests };
@@ -28,7 +28,7 @@ test('rejects unsafe endpoints and missing API credentials', async t => {
   await assert.rejects(h.call('ask', { messages: [{ role: 'user', content: '你好' }] }), /密钥/);
   assert.equal(h.requests.length, 0);
 });
-test('sends explicit screenshot with the current question and retains configured key', async t => {
+test('uses Electron networking for system proxy support and retains screenshot and key', async t => {
   const h = await harness(t);
   h.call('save', { endpoint: 'https://example.com/v1/', model: 'vision', key: 'test-key' });
   h.call('save', { endpoint: 'https://example.com/v1', model: 'vision', key: '' });

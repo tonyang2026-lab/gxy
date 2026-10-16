@@ -34,3 +34,7 @@ npm run build:win
 `.github/workflows/windows.yml` 可在 Windows runner 上测试、构建并保留安装包；需要先把代码推送到 GitHub，当前不会自动替你推送。
 
 Node 测试覆盖请求组装、密钥保留、接口校验和消息角色校验，使用隔离的 Electron/API 替身，不代表真实模型连通或 Windows 桌面功能验证。
+
+## 网络代理
+
+AI 请求使用 Electron 网络接口，跟随 Windows 系统代理。使用 v2rayN 时保持其运行并开启“自动配置系统代理”，更改代理后重启桌宠。无需将 API 接口地址改为本地代理地址。
