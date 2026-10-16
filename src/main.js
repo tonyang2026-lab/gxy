@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, session, dialog } = require('electron');
 const path = require('node:path');
 let win;
 app.whenReady().then(() => {
@@ -9,6 +9,7 @@ app.whenReady().then(() => {
   globalShortcut.register('CommandOrControl+Shift+Space', () => { win.show(); win.focus(); });
   ipcMain.handle('hide', () => win.hide());
   ipcMain.handle('quit', () => app.quit());
+  require('./competitors/service').register({ app, ipcMain, session, dialog, win });
 });
 app.on('will-quit', () => globalShortcut.unregisterAll());
 app.on('window-all-closed', () => app.quit());
