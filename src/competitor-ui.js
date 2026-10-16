@@ -1,6 +1,6 @@
 (() => {
   const get = id => document.getElementById(`competitor-${id}`);
-  const api = window.pet.competitor;
+  const api = window.competitor;
   const stateNames = { queued: '准备中', running: '采集中', needs_keywords: '请核对核心词', complete: '范围内采集完成', partial: '部分完成或访问失败', cancelled: '已取消' };
   let jobId = null, polling = false, runningJob = false, suggestedJob = null;
   const status = text => { get('status').textContent = text; };

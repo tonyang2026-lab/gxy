@@ -1,7 +1,7 @@
 {
   "name": "gxy",
   "version": "1.0.0",
-  "description": "小星 Windows 本地陪伴桌宠",
+  "description": "ASIN 竞品采集与规则评分工具",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
