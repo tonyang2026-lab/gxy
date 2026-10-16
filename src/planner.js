@@ -39,5 +39,22 @@
     if (plan.tasks.length >= 100) { get('plan-status').textContent = '最多保存 100 个步骤，请先删除不需要的任务。'; return; }
     dispatch({ type: 'add', id: crypto.randomUUID(), title: get('task-title').value }); get('task-title').value = ''; get('task-title').focus();
   };
+  const selector = get('amazon-template');
+  AmazonTemplates.templates.forEach(t => { const option = document.createElement('option'); option.value = t.id; option.textContent = t.name; selector.append(option); });
+  function previewTemplate() {
+    const template = AmazonTemplates.templates.find(t => t.id === selector.value);
+    get('template-note').textContent = template.note;
+    get('template-preview').replaceChildren();
+    template.tasks.forEach(title => { const li = document.createElement('li'); li.textContent = title; get('template-preview').append(li); });
+  }
+  selector.onchange = previewTemplate;
+  get('add-template').onclick = () => {
+    const result = AmazonTemplates.append(plan, selector.value, () => crypto.randomUUID());
+    plan = result.plan;
+    get('plan-status').textContent = `已添加 ${result.added} 项，跳过 ${result.duplicates} 项同名未完成任务${result.overflow ? `；清单已达上限，另有 ${result.overflow} 项未添加` : ''}。`;
+    renderPlan(); save();
+    if (result.added) say('工作清单准备好了，完成一项就有好吃的！', true);
+  };
+  previewTemplate();
   renderPlan();
 })();
