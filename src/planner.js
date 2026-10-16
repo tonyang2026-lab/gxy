@@ -18,6 +18,7 @@
     const b = document.createElement('button'); b.type = 'button'; b.textContent = text; b.setAttribute('aria-label', label); b.disabled = disabled; b.onclick = () => dispatch(action); return b;
   }
   function renderPlan() {
+    window.scheduleUI.invalidate();
     const done = plan.tasks.filter(t => t.done).length;
     const unfinished = plan.tasks.filter(t => !t.done);
     get('plan-progress').textContent = `${done}/${plan.tasks.length} 已完成`;
@@ -31,7 +32,7 @@
       controls.append(button('↑', `上移 ${t.title}`, { type: 'move', id: t.id, direction: -1 }, index === 0), button('↓', `下移 ${t.title}`, { type: 'move', id: t.id, direction: 1 }, index === plan.tasks.length - 1));
       if (t.food) { const badge = document.createElement('span'); badge.className = 'food-badge'; badge.textContent = `已喂 ${Planner.foods.find(f => f.name === t.food).emoji} ${t.food}`; controls.append(badge); }
       controls.append(button('删除', `删除 ${t.title}`, { type: 'remove', id: t.id }));
-      row.append(check, text, controls); get('task-list').append(row);
+      row.append(check, text, controls, window.scheduleUI.controls(t)); get('task-list').append(row);
     });
   }
   get('task-form').onsubmit = e => {
@@ -55,6 +56,7 @@
     renderPlan(); save();
     if (result.added) say('工作清单准备好了，完成一项就有好吃的！', true);
   };
+  get('schedule-form').onsubmit = e => { e.preventDefault(); window.scheduleUI.generate(plan.tasks); };
   previewTemplate();
   renderPlan();
 })();
