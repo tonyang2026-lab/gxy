@@ -1,0 +1,8 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"><title>小星桌宠</title><link rel="stylesheet" href="style.css"></head><body>
+<main><header><span>✦ 小星 · AI 桌宠</span><div><button id="settingsButton" aria-label="设置">⚙</button><button id="hide" aria-label="隐藏">−</button><button id="quit" aria-label="退出">×</button></div></header>
+<section class="pet"><div class="avatar"><img class="pet-image" src="assets/agent-pet.png" alt="黄色圆头、戴墨镜穿黑西装的机器人特工桌宠" draggable="false"></div><p id="pet-caption">小星特工，随时待命。</p><small>Ctrl + Shift + Space 呼出</small></section>
+<form id="settings" hidden><label>兼容 OpenAI 的 HTTPS 接口<input id="endpoint" type="url" required placeholder="https://api.openai.com/v1"></label><label>模型<input id="model" required></label><label>API 密钥<input id="key" type="password" autocomplete="off" placeholder="留空保留已保存的密钥"></label><small>密钥由系统加密保存；问题与选定截图会发送到此接口。</small><button type="submit">保存设置</button></form>
+<section id="messages" aria-live="polite"><div class="message assistant">你好！可以问我问题，或先点击“截取屏幕”，预览后再发送给我分析。</div></section>
+<section id="attachment" hidden><img id="preview" alt="待发送截图预览"><button id="remove">移除截图</button><small>请确认截图不包含密码等敏感信息。</small></section>
+<p id="status" role="status"></p><form id="chat"><textarea id="question" rows="2" maxlength="20000" placeholder="有什么需要帮忙的？" aria-label="你的问题"></textarea><div class="actions"><button type="button" id="capture">截取屏幕</button><button type="button" id="clear">清空</button><button type="submit" id="send">发送 ↗</button></div></form>
+</main><script src="renderer.js"></script></body></html>

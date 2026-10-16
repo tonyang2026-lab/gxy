@@ -1,0 +1,42 @@
+{
+  "name": "gxy",
+  "version": "1.0.0",
+  "description": "小星 Windows AI 桌宠助手",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "build:win": "electron-builder --win nsis --x64"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonyang2026-lab/gxy.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/tonyang2026-lab/gxy/issues"
+  },
+  "homepage": "https://github.com/tonyang2026-lab/gxy#readme",
+  "devDependencies": {
+    "electron": "^44.8.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "lab.gxy.xiaoxing",
+    "productName": "小星桌宠",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
