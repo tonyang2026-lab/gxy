@@ -57,7 +57,7 @@ $('close-align').onclick = () => $('align-dialog').close();
 $('confirm-align').onclick = async () => { try { const value = await api.align(editingId, Number($('overlap-number').value)); $('align-dialog').close(); update(value); } catch (error) { status(error.message); } };
 $('start').onclick = async () => {
   $('start').disabled = true;
-  try { update(await api.start($('display').value)); } catch (error) { status(error.message); $('start').disabled = false; }
+  try { update(await api.start($('display').value, { automatic: $('automatic').checked, ticks: Number($('scroll-ticks').value), settle: Number($('scroll-wait').value) })); } catch (error) { status(error.message); $('start').disabled = false; }
 };
 $('save').onclick = async () => {
   $('save').disabled = true;

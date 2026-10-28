@@ -17,7 +17,9 @@ function image(offset = 0) {
 function native(p) {
   return { isEmpty:()=>false, getSize:()=>({width:p.width,height:p.height}), toPNG:()=>PNG.sync.write(p), toDataURL:()=>`data:image/png;base64,${PNG.sync.write(p).toString('base64')}`, resize:()=>native(p), crop:r=>{const out=new PNG({width:r.width,height:r.height}); PNG.bitblt(p,out,r.x,r.y,r.width,r.height,0,0);return native(out);} };
 }
-async function harness(t, occupied = false) {
+async function harness(t, occupied = false, automatic = false) {
+  let autoOptions;
+  const autoMock = { runAuto: options => { autoOptions = options; return new Promise(resolve => options.signal.addEventListener('abort', () => resolve('已停止'), { once: true })); } };
   const windows=[], ipc=new Map(), shortcuts=new Map(), appEvents=new Map(), sessions=[];
   const output=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'longshot-main-')),'saved.png');
   t.after(()=>{appEvents.get('will-quit')?.();fs.rmSync(path.dirname(output),{recursive:true,force:true});});
@@ -35,7 +37,7 @@ async function harness(t, occupied = false) {
   class Session extends ShotSession {constructor(dir){super(dir);sessions.push(this);}}
   const electron={
     app:{whenReady:()=>Promise.resolve(),on:(name,fn)=>appEvents.set(name,fn),quit(){}},BrowserWindow:Window,
-    ipcMain:{handle:(name,fn)=>ipc.set(name,fn)},screen:{getAllDisplays:()=>[{id:1,bounds:{x:0,y:0,width:160,height:300},scaleFactor:1}]},
+    ipcMain:{handle:(name,fn)=>ipc.set(name,fn)},screen:{dipToScreenPoint:point=>point,getAllDisplays:()=>[{id:1,bounds:{x:0,y:0,width:160,height:300},scaleFactor:1}]},
     desktopCapturer:{getSources:async()=>[{display_id:'1',thumbnail:native(current.image)}]},
     globalShortcut:{register:(name,fn)=>{if(occupied)return false;shortcuts.set(name,fn);return true;},unregister:name=>shortcuts.delete(name),unregisterAll:()=>shortcuts.clear()},
     Tray:class {setToolTip(text){this.text=text;}setContextMenu(){}on(){}destroy(){}},Menu:{buildFromTemplate:items=>items},
@@ -43,13 +45,13 @@ async function harness(t, occupied = false) {
     dialog:{showMessageBox:async()=>({response:1}),showMessageBoxSync:()=>1,showSaveDialog:async()=>({filePath:output,canceled:false})}
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../src/main.js'),'utf8'),{
-    require:name=>name==='electron'?electron:name==='./session'?{ShotSession:Session}:name==='./geometry'?require('../src/geometry'):require(name),
-    __dirname:path.join(__dirname,'../src'),Buffer,setTimeout:callback=>{queueMicrotask(callback);return 0;},clearTimeout(){}
+    require:name=>name==='electron'?electron:name==='./session'?{ShotSession:Session}:name==='./auto-capture'&&automatic?autoMock:name.startsWith('./')?require('../src/'+name.slice(2)):require(name),
+    __dirname:path.join(__dirname,'../src'),Buffer,AbortController,setTimeout:callback=>{queueMicrotask(callback);return 0;},clearTimeout(){}
   });
   await Promise.resolve();
   const call=(name,...args)=>ipc.get(`longshot:${name}`)({sender:windows[0].webContents},...args);
   const overlayCall=(name,...args)=>ipc.get(`longshot:${name}`)({sender:windows.at(-1).webContents},...args);
-  return {windows,call,overlayCall,shortcuts,current,output,sessions,ipc};
+  return {windows,call,overlayCall,shortcuts,current,output,sessions,ipc,getAutoOptions:()=>autoOptions};
 }
 test('capture selection, global shortcuts, PNG save and cleanup operate as one workflow', async t=>{
   const h=await harness(t);
@@ -76,4 +78,15 @@ test('occupied shortcuts leave usable capture with tray fallback and invalid IPC
   await h.call('start','1');await h.overlayCall('select',{x:0,y:0,width:160,height:300});
   assert.match((await h.call('state')).message,/托盘/);
   assert.throws(()=>h.ipc.get('longshot:state')({sender:{}}),/无效窗口/);
+});
+
+test('automatic mode starts with physical bounds and stop returns review without deadlock', async t=>{
+  const h=await harness(t,false,true);
+  await h.call('start','1',{automatic:true,ticks:1,settle:2000});
+  assert.equal((await h.overlayCall('selection')).automatic,true);
+  await h.overlayCall('select',{x:0,y:0,width:160,height:300});
+  const options=h.getAutoOptions();assert.equal(options.ticks,1);assert.equal(options.settle,2000);
+  assert.equal(options.bounds.x,80);assert.equal(options.bounds.y,150);
+  await h.shortcuts.get('CommandOrControl+Shift+2')();
+  assert.equal(options.signal.aborted,true);assert.equal((await h.call('state')).phase,'review');assert.equal(h.windows[0].hidden,false);
 });

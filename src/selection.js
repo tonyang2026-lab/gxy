@@ -2,7 +2,7 @@ const box = document.getElementById('box');
 let origin = null, submitting = false, ready = false;
 const clamp = (n, max) => Math.max(0, Math.min(max, n));
 function rectangle(event) { const x = clamp(event.clientX, innerWidth), y = clamp(event.clientY, innerHeight); return { x: Math.min(origin.x, x), y: Math.min(origin.y, y), width: Math.abs(origin.x - x), height: Math.abs(origin.y - y) }; }
-window.longshot.selection().then(data => { const image = document.getElementById('desktop'); image.onload = () => { ready = true; }; image.src = data.image; }).catch(() => window.longshot.cancelSelection());
+window.longshot.selection().then(data => { if (data.automatic) document.getElementById('hint').textContent = '自动模式：框选正文后即开始滚动。期间请勿移动鼠标；移动鼠标或 Ctrl+Shift+2 停止。Esc 取消框选。'; const image = document.getElementById('desktop'); image.onload = () => { ready = true; }; image.src = data.image; }).catch(() => window.longshot.cancelSelection());
 document.onpointerdown = event => { if (!ready || event.button !== 0 || submitting) return; origin = { x: event.clientX, y: event.clientY }; box.style.display = 'block'; document.body.setPointerCapture(event.pointerId); };
 document.onpointermove = event => { if (!origin || submitting) return; const r = rectangle(event); Object.assign(box.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px` }); };
 document.onpointerup = async event => {
