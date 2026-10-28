@@ -42,10 +42,32 @@ class ShotSession {
     this.changed();
   }
   output() { if (!this.cache) this.cache = S.compose(this.frames, f => this.read(f)); return this.cache; }
+  async exportOriginals(directory) {
+    const files = [];
+    for (let index = 0; index < this.frames.length; index++) {
+      const frame = this.frames[index], name = `原始第${String(index + 1).padStart(3, '0')}屏.png`;
+      await fs.promises.copyFile(path.join(this.directory, frame.file), path.join(directory, name));
+      files.push({ file: name, width: frame.width, height: frame.height, overlap: frame.overlap });
+    }
+    await fs.promises.writeFile(path.join(directory, '截图清单.json'), JSON.stringify({ frames: files }, null, 2));
+    return files;
+  }
+  async exportParts(directory, limits) {
+    const files = [], parts = S.planParts(this.frames, limits);
+    for (let index = 0; index < parts.length; index++) {
+      const part = parts[index], name = `长图第${String(index + 1).padStart(3, '0')}段.png`;
+      const buffer = S.composePart(part, frame => this.read(frame));
+      await fs.promises.writeFile(path.join(directory, name), buffer);
+      files.push({ file: name, ...S.pngDimensions(buffer) });
+    }
+    await fs.promises.writeFile(path.join(directory, '分段清单.json'), JSON.stringify({ originalSize: S.dimensions(this.frames, false), parts: files }, null, 2));
+    return files;
+  }
   metadata() {
-    let size = null, issue = '';
+    let size = null, logicalSize = null, partsCount = 0, issue = '';
+    try { logicalSize = S.dimensions(this.frames, false); partsCount = S.planParts(this.frames).length; } catch {}
     try { size = S.dimensions(this.frames); } catch (error) { issue = error.message; }
-    return { frames: this.frames.map(({ file, ...rest }) => rest), version: this.version, saved: this.saved, size, issue };
+    return { frames: this.frames.map(({ file, ...rest }) => rest), version: this.version, saved: this.saved, size, logicalSize, partsCount, issue };
   }
   destroy() { fs.rmSync(this.directory, { recursive: true, force: true }); this.cache = null; this.frames = []; }
 }

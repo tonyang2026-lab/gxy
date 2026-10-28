@@ -61,3 +61,37 @@ test('screen selection maps to physical image pixels at multiple DPI scales', ()
   assert.deepEqual(cropBounds({x:0,y:0,width:1280,height:720},{width:1280,height:720},{width:2560,height:1440}),{x:0,y:0,width:2560,height:1440});
   assert.throws(()=>cropBounds({x:-2,y:0,width:200,height:200},{width:1280,height:720},{width:1920,height:1080}),/范围/);
 });
+test('sparse-column false matches fail dense pixel validation instead of trimming content',()=>{
+  const doc=documentImage(640,1000), a=slice(doc,0,300), b=slice(doc,600,300);
+  for(let col=0;col<24;col++){
+    const x=Math.min(639,Math.floor(640*(.06+.88*col/23)));
+    for(let y=0;y<160;y++)for(let dx=-1;dx<=1;dx++){
+      const src=((y+140)*640+x+dx)*4,dst=(y*640+x+dx)*4;
+      a.data.copy(b.data,dst,src,src+4);
+    }
+  }
+  const result=S.matchOverlap(a,b);assert.equal(result.overlap,null);assert.match(result.reason,/密集/);
+});
+test('segmented output preserves every row exactly once across frame and part boundaries',()=>{
+  const doc=documentImage(),a=slice(doc,0,300),b=slice(doc,140,300);
+  const frames=[{width:160,height:300,overlap:0,image:a},{width:160,height:300,overlap:160,image:b}];
+  const parts=S.planParts(frames,{maxHeight:180,maxPixels:160*180});
+  assert.deepEqual(parts.map(p=>p.height),[180,180,80]);
+  const outputs=parts.map(p=>PNG.sync.read(S.composePart(p,f=>f.image)));
+  assert.deepEqual(Buffer.concat(outputs.map(p=>p.data)),slice(doc,0,440).data);
+});
+test('raw export preserves all unaligned original frames without cropping',async t=>{
+  const s=session(t),doc=documentImage();const frames=[slice(doc,0,300),slice(doc,600,300)];
+  frames.forEach(frame=>s.append(encode(frame)));assert.equal(s.metadata().logicalSize,null);
+  const out=fs.mkdtempSync(path.join(os.tmpdir(),'longshot-originals-'));t.after(()=>fs.rmSync(out,{recursive:true,force:true}));
+  const files=await s.exportOriginals(out);assert.equal(files.length,2);
+  files.forEach((file,i)=>assert.deepEqual(PNG.sync.read(fs.readFileSync(path.join(out,file.file))).data,frames[i].data));
+});
+test('file segment export writes complete PNGs and a manifest with exact total dimensions',async t=>{
+  const s=session(t),doc=documentImage();s.append(encode(slice(doc,0,300)));s.append(encode(slice(doc,140,300)));
+  const out=fs.mkdtempSync(path.join(os.tmpdir(),'longshot-parts-'));t.after(()=>fs.rmSync(out,{recursive:true,force:true}));
+  const files=await s.exportParts(out,{maxHeight:220,maxPixels:160*220});
+  assert.equal(files.length,2);assert.equal(files.reduce((n,f)=>n+f.height,0),440);
+  const data=Buffer.concat(files.map(f=>PNG.sync.read(fs.readFileSync(path.join(out,f.file))).data));assert.deepEqual(data,slice(doc,0,440).data);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(out,'分段清单.json'),'utf8')).originalSize.height,440);
+});

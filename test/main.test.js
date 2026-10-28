@@ -6,8 +6,8 @@ const path = require('node:path');
 const os = require('node:os');
 const { PNG } = require('pngjs');
 const { ShotSession } = require('../src/session');
-function image(offset = 0) {
-  const p = new PNG({ width: 160, height: 300 });
+function image(offset = 0, width = 160, height = 300) {
+  const p = new PNG({ width, height });
   for(let y=0;y<p.height;y++) for(let x=0;x<p.width;x++) {
     const i=(y*p.width+x)*4; let n=Math.imul((y+offset)*719+x*107+8, 1597334677)>>>0;
     p.data[i]=n&255; p.data[i+1]=n>>>8&255; p.data[i+2]=n>>>16&255; p.data[i+3]=255;
@@ -15,15 +15,15 @@ function image(offset = 0) {
   return p;
 }
 function native(p) {
-  return { isEmpty:()=>false, getSize:()=>({width:p.width,height:p.height}), toPNG:()=>PNG.sync.write(p), toDataURL:()=>`data:image/png;base64,${PNG.sync.write(p).toString('base64')}`, resize:()=>native(p), crop:r=>{const out=new PNG({width:r.width,height:r.height}); PNG.bitblt(p,out,r.x,r.y,r.width,r.height,0,0);return native(out);} };
+  return { isEmpty:()=>false, getSize:()=>({width:p.width,height:p.height}), toPNG:()=>PNG.sync.write(p), toDataURL:()=>`data:image/png;base64,${PNG.sync.write(p).toString('base64')}`, resize:size=>{const out=new PNG(size);for(let y=0;y<size.height;y++)for(let x=0;x<size.width;x++){const i=(Math.floor(y*p.height/size.height)*p.width+Math.floor(x*p.width/size.width))*4;p.data.copy(out.data,(y*size.width+x)*4,i,i+4);}return native(out);}, crop:r=>{const out=new PNG({width:r.width,height:r.height}); PNG.bitblt(p,out,r.x,r.y,r.width,r.height,0,0);return native(out);} };
 }
-async function harness(t, occupied = false, automatic = false) {
+async function harness(t, occupied = false, automatic = false, initialImage = image()) {
   let autoOptions;
   const autoMock = { runAuto: options => { autoOptions = options; return new Promise(resolve => options.signal.addEventListener('abort', () => resolve('已停止'), { once: true })); } };
   const windows=[], ipc=new Map(), shortcuts=new Map(), appEvents=new Map(), sessions=[];
   const output=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'longshot-main-')),'saved.png');
   t.after(()=>{appEvents.get('will-quit')?.();fs.rmSync(path.dirname(output),{recursive:true,force:true});});
-  const current = { image:image() };
+  const current = { image:initialImage };
   class Window {
     constructor(options){this.options=options;this.events=new Map();this.webContents={setWindowOpenHandler(){},on(){}};windows.push(this);}
     on(name,fn){this.events.set(name,fn);}
@@ -42,7 +42,7 @@ async function harness(t, occupied = false, automatic = false) {
     globalShortcut:{register:(name,fn)=>{if(occupied)return false;shortcuts.set(name,fn);return true;},unregister:name=>shortcuts.delete(name),unregisterAll:()=>shortcuts.clear()},
     Tray:class {setToolTip(text){this.text=text;}setContextMenu(){}on(){}destroy(){}},Menu:{buildFromTemplate:items=>items},
     nativeImage:{createFromBitmap(){return {};},createFromBuffer:b=>native(PNG.sync.read(b))},
-    dialog:{showMessageBox:async()=>({response:1}),showMessageBoxSync:()=>1,showSaveDialog:async()=>({filePath:output,canceled:false})}
+    dialog:{showMessageBox:async()=>({response:1}),showMessageBoxSync:()=>1,showSaveDialog:async()=>({filePath:output,canceled:false}),showOpenDialog:async()=>({filePaths:[path.dirname(output)],canceled:false})}
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../src/main.js'),'utf8'),{
     require:name=>name==='electron'?electron:name==='./session'?{ShotSession:Session}:name==='./auto-capture'&&automatic?autoMock:name.startsWith('./')?require('../src/'+name.slice(2)):require(name),
@@ -89,4 +89,30 @@ test('automatic mode starts with physical bounds and stop returns review without
   assert.equal(options.bounds.x,80);assert.equal(options.bounds.y,150);
   await h.shortcuts.get('CommandOrControl+Shift+2')();
   assert.equal(options.signal.aborted,true);assert.equal((await h.call('state')).phase,'review');assert.equal(h.windows[0].hidden,false);
+});
+
+test('PNG export uses original pixels even when preview is actually resized',async t=>{
+  const original=image(0,1500,300),h=await harness(t,false,false,original);
+  await h.call('start','1');await h.overlayCall('select',{x:0,y:0,width:160,height:300});
+  await h.shortcuts.get('CommandOrControl+Shift+2')();
+  const preview=await h.call('preview');
+  assert.equal(preview.previewSize.width,1000);assert.equal(preview.size.width,1500);
+  const thumbnail=PNG.sync.read(Buffer.from(preview.image.split(',')[1],'base64'));assert.equal(thumbnail.width,1000);
+  await h.call('save');const saved=PNG.sync.read(fs.readFileSync(h.output));
+  assert.equal(saved.width,1500);assert.equal(saved.height,300);assert.deepEqual(saved.data,original.data);
+});
+test('folder exports preserve raw frames and create full-sized segmented PNG',async t=>{
+  const h=await harness(t);await h.call('start','1');await h.overlayCall('select',{x:0,y:0,width:160,height:300});
+  await h.shortcuts.get('CommandOrControl+Shift+2')();
+  const raw=await h.call('saveOriginals');assert.equal(raw.count,1);assert.ok(fs.existsSync(path.join(raw.folder,'原始第001屏.png')));
+  const parts=await h.call('saveParts');assert.equal(parts.count,1);assert.equal(PNG.sync.read(fs.readFileSync(path.join(parts.folder,'长图第001段.png'))).height,300);
+});
+test('automatic capture retains a frame when single-image output exceeds its limit',async t=>{
+  const h=await harness(t,false,true);await h.call('start','1',{automatic:true,ticks:1,settle:1200});
+  await h.overlayCall('select',{x:0,y:0,width:160,height:300});
+  const current=h.sessions[0],metadata=current.metadata.bind(current);
+  current.metadata=()=>{const value=metadata();return current.frames.length>=2?{...value,size:null,issue:'单张图片超限'}:value;};
+  const result=h.getAutoOptions().append(PNG.sync.write(image(140)));
+  assert.equal(current.frames.length,2);assert.notEqual(result.limit,true);assert.match(result.note,/分段导出/);
+  await h.shortcuts.get('CommandOrControl+Shift+2')();
 });

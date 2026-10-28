@@ -6,11 +6,13 @@ const { ShotSession } = require('./session');
 const { cropBounds } = require('./geometry');
 const { createWindowsScroller } = require('./windows-scroll');
 const { runAuto } = require('./auto-capture');
+const { pngDimensions } = require('./stitch');
 let main, overlay, tray, session, display, region, frozen, phase = 'idle', message = '', selecting = false, capturePromise = null;
+let exporting = false;
 let autoSettings = { automatic: false, ticks: 2, settle: 1200 }, autoAbort = null, autoPromise = null, autoDriver = null, finishing = false;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const CAPTURE_KEY = 'CommandOrControl+Shift+1', FINISH_KEY = 'CommandOrControl+Shift+2';
-function state() { return { phase, message, ...(session ? session.metadata() : { frames: [], version: 0, saved: false, size: null, issue: '尚未采集' }) }; }
+function state() { return { phase, message, exporting, ...(session ? session.metadata() : { frames: [], version: 0, saved: false, size: null, issue: '尚未采集' }) }; }
 function trustedMain(event) { if (event.sender !== main.webContents) throw new Error('无效窗口'); }
 function updateTray() {
   if (!tray) return;
@@ -41,6 +43,7 @@ function cancelSelection() {
   overlay = null; frozen = null; phase = 'idle'; selecting = false; main.show(); note('已取消区域选择');
 }
 async function start(id, settings = {}) {
+  if (exporting) throw new Error('正在导出，请稍候');
   if (phase === 'capturing' || phase === 'selecting' || selecting) throw new Error('已有采集正在进行');
   if (session?.frames.length && !session.saved) {
     const answer = await dialog.showMessageBox(main, { type: 'question', message: '当前长截图尚未保存。开始新采集会丢弃这些截图。', buttons: ['返回保存', '丢弃并继续'], defaultId: 0, cancelId: 0 });
@@ -109,7 +112,7 @@ function beginAuto() {
     append: buffer => {
       const result = session.append(buffer), last = session.frames.at(-1);
       if (last.overlap === null) return { ...result, unaligned: true };
-      if (!session.metadata().size) { session.remove(last.id); return { ...result, limit: true }; }
+      if (!session.metadata().size) result.note += '；已超过单张上限，需分段导出（全部屏次已保留）';
       return { ...result, limit: session.frames.length >= 40 };
     },
     progress: text => note(`自动采集 ${session.frames.length} 屏 · ${text}`)
@@ -132,7 +135,7 @@ function resized(buffer, width = 1000, height = 6000) {
   const image = nativeImage.createFromBuffer(buffer), size = image.getSize(), factor = Math.min(1, width / size.width, height / size.height);
   return image.resize({ width: Math.max(1, Math.round(size.width * factor)), height: Math.max(1, Math.round(size.height * factor)) }).toDataURL();
 }
-function editable() { if (!session || ['capturing','selecting'].includes(phase)) throw new Error('请先结束采集'); }
+function editable() { if (exporting) throw new Error('正在导出，请稍候'); if (!session || ['capturing','selecting'].includes(phase)) throw new Error('请先结束采集'); }
 app.whenReady().then(() => {
   main = new BrowserWindow({ width: 1060, height: 820, minWidth: 740, minHeight: 560, title: '长截图工具', autoHideMenuBar: true, backgroundColor: '#f3f6fc', webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
   main.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -143,6 +146,7 @@ app.whenReady().then(() => {
   tray = new Tray(nativeImage.createFromBitmap(pixels, { width: 16, height: 16 }));
   tray.on('double-click', () => phase === 'capturing' ? finish() : main.show()); updateTray();
   main.on('close', event => {
+    if (exporting) { event.preventDefault(); note('正在导出，请等待完成后关闭'); return; }
     if (session?.frames.length && !session.saved && dialog.showMessageBoxSync(main, { type: 'question', message: '截图尚未保存，退出会丢弃本次截图。', buttons: ['返回', '退出'], defaultId: 0, cancelId: 0 }) === 0) event.preventDefault();
     else { phase = 'closing'; autoAbort?.abort(); autoDriver?.terminate(); releaseKeys(); if (overlay && !overlay.isDestroyed()) overlay.close(); }
   });
@@ -154,17 +158,40 @@ app.whenReady().then(() => {
   ipcMain.handle('longshot:cancelSelection', event => { if (overlay && event.sender === overlay.webContents) cancelSelection(); });
   ipcMain.handle('longshot:align', (event, id, overlap) => { trustedMain(event); editable(); session.align(id, overlap); return state(); });
   ipcMain.handle('longshot:remove', (event, id) => { trustedMain(event); editable(); session.remove(id); return state(); });
-  ipcMain.handle('longshot:preview', event => { trustedMain(event); editable(); return { image: resized(session.output()), ...session.metadata() }; });
+  ipcMain.handle('longshot:preview', event => { trustedMain(event); editable(); const image = resized(session.output()); const previewSize = pngDimensions(Buffer.from(image.split(',')[1], 'base64')); return { image, previewSize, ...session.metadata() }; });
   ipcMain.handle('longshot:framePair', (event, id) => { trustedMain(event); editable(); const index = session.frames.findIndex(f => f.id === id); if (index < 1) throw new Error('第一屏无需校准'); const frame = session.frames[index], previous = session.frames[index - 1]; return { previous: resized(fs.readFileSync(path.join(session.directory, previous.file)), 500, 1300), current: resized(fs.readFileSync(path.join(session.directory, frame.file)), 500, 1300), height: frame.height, overlap: frame.overlap }; });
   ipcMain.handle('longshot:save', async event => {
-    trustedMain(event); editable(); const current = session, version = current.version, buffer = current.output();
-    const result = await dialog.showSaveDialog(main, { defaultPath: `长截图-${Date.now()}.png`, filters: [{ name: 'PNG 图片', extensions: ['png'] }] });
-    if (result.canceled || !result.filePath) return null;
-    await fs.promises.writeFile(result.filePath, buffer);
-    if (session === current && current.version === version) current.saved = true;
-    note(`已保存：${result.filePath}`);
-    return result.filePath;
+    trustedMain(event); editable(); exporting = true;
+    try {
+      const current = session, version = current.version, buffer = current.output(), size = pngDimensions(buffer);
+      const expected = current.metadata().size;
+      if (!expected || expected.width !== size.width || expected.height !== size.height) throw new Error('导出尺寸与完整拼接尺寸不一致，已停止保存');
+      const result = await dialog.showSaveDialog(main, { defaultPath: `长截图-${Date.now()}.png`, filters: [{ name: 'PNG 图片', extensions: ['png'] }] });
+      if (result.canceled || !result.filePath) return null;
+      await fs.promises.writeFile(result.filePath, buffer);
+      if (session === current && current.version === version) current.saved = true;
+      note(`已保存完整PNG：${result.filePath} · ${size.width}×${size.height} 像素`);
+      return result.filePath;
+    } catch (error) { note(`导出失败：${error.message}`); throw error; } finally { exporting = false; }
   });
+  async function exportFolder(event, originals) {
+    trustedMain(event); editable(); exporting = true;
+    try {
+      const current = session, version = current.version;
+      if (!current.frames.length) throw new Error('没有可导出的屏次');
+      if (!originals && !current.metadata().logicalSize) throw new Error('请先校准重叠，或导出原始屏次');
+      const result = await dialog.showOpenDialog(main, { title: '选择导出目录（将在其中创建独立子文件夹）', properties: ['openDirectory', 'createDirectory'] });
+      if (result.canceled || !result.filePaths[0]) return null;
+      const prefix = originals ? '长截图原始屏次-' : '长截图分段-';
+      const folder = await fs.promises.mkdtemp(path.join(result.filePaths[0], prefix));
+      const files = originals ? await current.exportOriginals(folder) : await current.exportParts(folder);
+      if (session === current && current.version === version) current.saved = true;
+      note(`已导出${originals ? '全部原始屏次' : '完整分段长图'}：${folder} · ${files.length} 张PNG`);
+      return { folder, count: files.length };
+    } catch (error) { note(`导出失败：${error.message}`); throw error; } finally { exporting = false; }
+  }
+  ipcMain.handle('longshot:saveParts', event => exportFolder(event, false));
+  ipcMain.handle('longshot:saveOriginals', event => exportFolder(event, true));
 });
 app.on('will-quit', () => { autoAbort?.abort(); autoDriver?.terminate(); globalShortcut.unregisterAll(); if (session) session.destroy(); if (tray) tray.destroy(); });
 app.on('window-all-closed', () => app.quit());
