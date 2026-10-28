@@ -39,6 +39,7 @@ function createWindowsScroller() {
   return {
     terminate() { stopped = true; if (child) child.kill(); fail(new Error('已停止自动滚动')); },
     begin: (bounds, signal) => send('begin', bounds, signal, 20000),
+    check: signal => send('check', {}, signal),
     step: (ticks, signal) => send('step', { ticks }, signal),
     async close() { if (!child) return; try { if (!stopped) await send('end', {}, null, 1000); } catch {} finally { stopped = true; child.kill(); fail(new Error('滚动助手已关闭')); } }
   };

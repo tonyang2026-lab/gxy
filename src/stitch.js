@@ -5,7 +5,9 @@ function check(image) {
   if (!image || !Number.isInteger(image.width) || !Number.isInteger(image.height) || image.width < 1 || image.height < 1 || image.width * image.height > 12000000 || image.data.length !== image.width * image.height * 4) throw new Error('截图尺寸无效或单张超过1200万像素');
 }
 function decode(buffer) { const image = PNG.sync.read(buffer); check(image); return image; }
+const signatureCache = new WeakMap();
 function signature(image) {
+  if (signatureCache.has(image)) return signatureCache.get(image);
   const columns = 24, rows = new Float32Array(image.height * columns);
   for (let y = 0; y < image.height; y++) for (let col = 0; col < columns; col++) {
     const x = Math.min(image.width - 1, Math.floor(image.width * (.06 + .88 * col / (columns - 1))));
@@ -16,6 +18,7 @@ function signature(image) {
     }
     rows[y * columns + col] = sum / 3;
   }
+  signatureCache.set(image, rows);
   return rows;
 }
 function verifyOverlap(previous, current, overlap) {
@@ -85,7 +88,7 @@ function compose(frames, readImage) {
     image.data.copy(output.data, y * bytes, overlap * bytes);
     y += image.height - overlap;
   });
-  return PNG.sync.write(output);
+  return PNG.sync.write(output, { deflateLevel: 1 });
 }
 function planParts(frames, limits = { maxHeight: MAX_HEIGHT, maxPixels: MAX_PIXELS }) {
   const size = dimensions(frames, false), maxRows = Math.min(limits.maxHeight, Math.floor(limits.maxPixels / size.width));
@@ -111,7 +114,7 @@ function composePart(part, readImage) {
     target += slice.rows;
   }
   if (target !== part.height) throw new Error('分段行数不完整');
-  return PNG.sync.write(image);
+  return PNG.sync.write(image, { deflateLevel: 1 });
 }
 function pngDimensions(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 24 || !buffer.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error('不是有效PNG');

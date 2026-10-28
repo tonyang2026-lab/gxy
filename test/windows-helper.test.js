@@ -10,8 +10,10 @@ test('Windows helper compiles C# and accepts end command without injecting mouse
     child.stdout.on('data',data=>stdout+=data.toString());child.stderr.on('data',data=>stderr+=data.toString());
     child.on('error',error=>{clearTimeout(timer);reject(error);});
     child.on('close',exit=>{clearTimeout(timer);resolve({stdout,stderr,exit});});
-    child.stdin.end(JSON.stringify({id:1,action:'end'})+'\n');
+    child.stdin.end(JSON.stringify({id:0,action:'check'})+'\n'+JSON.stringify({id:1,action:'end'})+'\n');
   });
   assert.equal(result.exit,0,result.stderr);const response=result.stdout.split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line)).find(item=>item.id===1);
+  const guard=result.stdout.split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line)).find(item=>item.id===0);
+  assert.equal(guard.ok,false);assert.match(guard.error,/Invalid scroll state/);
   assert.equal(response.ok,true);assert.equal(response.result,'stopped');
 });

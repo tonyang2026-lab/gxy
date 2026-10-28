@@ -95,3 +95,9 @@ test('file segment export writes complete PNGs and a manifest with exact total d
   const data=Buffer.concat(files.map(f=>PNG.sync.read(fs.readFileSync(path.join(out,f.file))).data));assert.deepEqual(data,slice(doc,0,440).data);
   assert.equal(JSON.parse(fs.readFileSync(path.join(out,'分段清单.json'),'utf8')).originalSize.height,440);
 });
+test('sequential capture reuses decoded previous screen instead of reading it from disk again',t=>{
+  const s=session(t),doc=documentImage();s.append(encode(slice(doc,0,300)));
+  const read=s.read.bind(s);let diskReads=0;s.read=frame=>{diskReads++;return read(frame);};
+  s.append(encode(slice(doc,100,300)));s.append(encode(slice(doc,200,300)));
+  assert.equal(diskReads,0);assert.equal(s.metadata().size.height,500);
+});

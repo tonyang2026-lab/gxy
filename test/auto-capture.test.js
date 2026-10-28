@@ -55,3 +55,38 @@ test('tiny blinking pixel changes count as stable but a real scroll does not',()
 test('waiting can be interrupted immediately by stop',async()=>{
   const controller=new AbortController();const waiting=abortableWait(10000,controller.signal);controller.abort();assert.equal(await waiting,false);
 });
+test('a brief still frame followed by movement is not accepted until two consecutive confirmations',async()=>{
+  const h=setup();const sequence=['a','a','b','b','b'];let shots=0,accepted;
+  h.options.shot=async()=>sequence[Math.min(shots++,sequence.length-1)];
+  h.options.equal=(a,b)=>a===b;h.options.baseline=()=> 'old';h.options.append=value=>{accepted=value;return {limit:true};};
+  await runAuto(h.options);assert.equal(accepted,'b');assert.equal(shots,5);
+});
+test('measured overlap adapts wheel steps gradually and reduces steps after a large jump',async()=>{
+  const h=setup();h.options.ticks=3;const ticks=[];let current=0,previous=0,added=0;
+  h.options.driver.step=async value=>{ticks.push(value);current++;};h.options.shot=async()=>current;
+  h.options.equal=(a,b)=>a===b;h.options.baseline=()=>previous;
+  h.options.append=value=>{previous=value;added++;return {advance:added===3?75:10,height:100,limit:added===4};};
+  await runAuto(h.options);assert.deepEqual(ticks,[2,2,3,2]);
+});
+test('small fingerprint probes require PNG encoding only for newly committed screens',async()=>{
+  const h=setup();let encoded=0,baseline;
+  function probe(offset){
+    const buffer=frame(offset),p=PNG.sync.read(buffer),fingerprint=Buffer.alloc(96*60*4);
+    for(let y=0;y<60;y++)p.data.copy(fingerprint,y*96*4,Math.floor(y*200/60)*96*4,(Math.floor(y*200/60)+1)*96*4);
+    return {width:96,height:200,fingerprint,toPNG:()=>{encoded++;return buffer;}};
+  }
+  baseline=probe(0);const next=probe(80);h.options.baseline=()=>baseline;h.options.shot=async()=>next;
+  h.options.append=sample=>{sample.toPNG();baseline=sample;return {};};
+  await runAuto(h.options);assert.equal(encoded,1);assert.equal(h.counts.step,4);
+});
+test('window changing after stability checks prevents committing that frame',async()=>{
+  const h=setup();let checks=0;h.options.driver.check=async()=>{if(++checks===2)throw new Error('目标窗口已切换');};
+  const result=await runAuto(h.options);assert.match(result,/目标窗口/);assert.equal(h.counts.append,0);assert.equal(h.counts.close,1);
+});
+
+test('small scroll setting remains the maximum even after many short advances',async()=>{
+  const h=setup();h.options.ticks=1;const ticks=[];let current=0,previous=0,added=0;
+  h.options.driver.step=async value=>{ticks.push(value);current++;};h.options.shot=async()=>current;h.options.equal=(a,b)=>a===b;h.options.baseline=()=>previous;
+  h.options.append=value=>{previous=value;return {advance:10,height:100,limit:++added===5};};
+  await runAuto(h.options);assert.deepEqual(ticks,[1,1,1,1,1]);
+});

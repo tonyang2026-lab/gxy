@@ -3,7 +3,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const S = require('./stitch');
 class ShotSession {
-  constructor(directory) { this.directory = directory; fs.mkdirSync(directory, { recursive: true }); this.frames = []; this.version = 0; this.saved = false; this.cache = null; }
+  constructor(directory) { this.directory = directory; fs.mkdirSync(directory, { recursive: true }); this.frames = []; this.version = 0; this.saved = false; this.cache = null; this.lastDecoded = null; }
   read(frame) { return S.decode(fs.readFileSync(path.join(this.directory, frame.file))); }
   changed() { this.version++; this.saved = false; this.cache = null; }
   append(buffer) {
@@ -14,12 +14,13 @@ class ShotSession {
     if (this.frames.length) {
       const last = this.frames.at(-1);
       if (last.width !== image.width || last.height !== image.height) throw new Error('截图尺寸变化，请结束本次采集后重新选择区域');
-      match = S.matchOverlap(this.read(last), image);
+      match = S.matchOverlap(this.lastDecoded || this.read(last), image);
       if (match.duplicate) return { added: false, note: match.reason };
     }
     const id = randomUUID(), file = `${id}.png`;
     fs.writeFileSync(path.join(this.directory, file), buffer);
     this.frames.push({ id, file, width: image.width, height: image.height, overlap: match.overlap, note: match.reason, manual: false });
+    this.lastDecoded = image;
     this.changed(); return { added: true, note: match.reason };
   }
   align(id, overlap) {
@@ -39,6 +40,7 @@ class ShotSession {
         Object.assign(this.frames[index], { overlap: match.duplicate ? null : match.overlap, manual: false, note: match.duplicate ? '与上一屏相同，请删除重复屏' : match.reason });
       }
     }
+    this.lastDecoded = this.frames.length ? this.read(this.frames.at(-1)) : null;
     this.changed();
   }
   output() { if (!this.cache) this.cache = S.compose(this.frames, f => this.read(f)); return this.cache; }
@@ -69,6 +71,6 @@ class ShotSession {
     try { size = S.dimensions(this.frames); } catch (error) { issue = error.message; }
     return { frames: this.frames.map(({ file, ...rest }) => rest), version: this.version, saved: this.saved, size, logicalSize, partsCount, issue };
   }
-  destroy() { fs.rmSync(this.directory, { recursive: true, force: true }); this.cache = null; this.frames = []; }
+  destroy() { fs.rmSync(this.directory, { recursive: true, force: true }); this.cache = null; this.lastDecoded = null; this.frames = []; }
 }
 module.exports = { ShotSession };

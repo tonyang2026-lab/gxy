@@ -37,15 +37,20 @@ public static class LongshotScroll {
     if (!SetCursorPos(x,y)) throw new Exception("Cannot position cursor");
     active=true; return "ready";
   }
-  public static string Step(int ticks) {
+  public static string Check() {
     SetThreadDpiAwarenessContext(new IntPtr(-4));
-    if (!active || ticks<1 || ticks>3) throw new Exception("Invalid scroll state");
+    if (!active) throw new Exception("Invalid scroll state");
     foreach (int key in new int[] {0x10,0x11,0x12,0x5B,0x5C,0x01,0x02,0x04})
       if ((GetAsyncKeyState(key) & 0x8000)!=0) throw new Exception("User input detected; automatic scrolling stopped");
     POINT cursor; RECT current;
     if (!GetCursorPos(out cursor) || Math.Abs(cursor.X-center.X)>12 || Math.Abs(cursor.Y-center.Y)>12) throw new Exception("Mouse moved; automatic scrolling stopped");
     if (!IsWindow(target) || GetForegroundWindow()!=target || Root(center)!=target) throw new Exception("Target window changed; automatic scrolling stopped");
     if (!GetWindowRect(target,out current) || current.Left!=bounds.Left || current.Top!=bounds.Top || current.Right!=bounds.Right || current.Bottom!=bounds.Bottom) throw new Exception("Target window moved or resized; automatic scrolling stopped");
+    return "valid";
+  }
+  public static string Step(int ticks) {
+    if (ticks<1 || ticks>3) throw new Exception("Invalid scroll amount");
+    Check();
     INPUT input=new INPUT(); input.type=0; input.data.mouse.mouseData=unchecked((uint)(-120*ticks)); input.data.mouse.dwFlags=0x0800;
     if (SendInput(1,new INPUT[]{input},Marshal.SizeOf(typeof(INPUT)))!=1) throw new Exception("Windows rejected mouse wheel input; use manual mode");
     return "scrolled";
@@ -64,6 +69,7 @@ while ($null -ne ($line = [Console]::ReadLine())) {
     $command = $line | ConvertFrom-Json
     switch ($command.action) {
       'begin' { $result=[LongshotScroll]::Begin([int]$command.x,[int]$command.y,[int]$command.left,[int]$command.top,[int]$command.right,[int]$command.bottom) }
+      'check' { $result=[LongshotScroll]::Check() }
       'step' { $result=[LongshotScroll]::Step([int]$command.ticks) }
       'end' { $result=[LongshotScroll]::End() }
       default { throw 'Unknown command' }

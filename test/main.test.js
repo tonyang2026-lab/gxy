@@ -14,12 +14,13 @@ function image(offset = 0, width = 160, height = 300) {
   }
   return p;
 }
-function native(p) {
-  return { isEmpty:()=>false, getSize:()=>({width:p.width,height:p.height}), toPNG:()=>PNG.sync.write(p), toDataURL:()=>`data:image/png;base64,${PNG.sync.write(p).toString('base64')}`, resize:size=>{const out=new PNG(size);for(let y=0;y<size.height;y++)for(let x=0;x<size.width;x++){const i=(Math.floor(y*p.height/size.height)*p.width+Math.floor(x*p.width/size.width))*4;p.data.copy(out.data,(y*size.width+x)*4,i,i+4);}return native(out);}, crop:r=>{const out=new PNG({width:r.width,height:r.height}); PNG.bitblt(p,out,r.x,r.y,r.width,r.height,0,0);return native(out);} };
+function native(p, counters) {
+  return { isEmpty:()=>false, getSize:()=>({width:p.width,height:p.height}), toPNG:()=>{if(counters)counters.encodes++;return PNG.sync.write(p);}, toBitmap:()=>Buffer.from(p.data), toDataURL:()=>`data:image/png;base64,${PNG.sync.write(p).toString('base64')}`, resize:size=>{const out=new PNG(size);for(let y=0;y<size.height;y++)for(let x=0;x<size.width;x++){const i=(Math.floor(y*p.height/size.height)*p.width+Math.floor(x*p.width/size.width))*4;p.data.copy(out.data,(y*size.width+x)*4,i,i+4);}return native(out,counters);}, crop:r=>{const out=new PNG({width:r.width,height:r.height}); PNG.bitblt(p,out,r.x,r.y,r.width,r.height,0,0);return native(out,counters);} };
 }
 async function harness(t, occupied = false, automatic = false, initialImage = image()) {
   let autoOptions;
   const autoMock = { runAuto: options => { autoOptions = options; return new Promise(resolve => options.signal.addEventListener('abort', () => resolve('已停止'), { once: true })); } };
+  const counters={encodes:0};
   const windows=[], ipc=new Map(), shortcuts=new Map(), appEvents=new Map(), sessions=[];
   const output=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'longshot-main-')),'saved.png');
   t.after(()=>{appEvents.get('will-quit')?.();fs.rmSync(path.dirname(output),{recursive:true,force:true});});
@@ -38,10 +39,10 @@ async function harness(t, occupied = false, automatic = false, initialImage = im
   const electron={
     app:{whenReady:()=>Promise.resolve(),on:(name,fn)=>appEvents.set(name,fn),quit(){}},BrowserWindow:Window,
     ipcMain:{handle:(name,fn)=>ipc.set(name,fn)},screen:{dipToScreenPoint:point=>point,getAllDisplays:()=>[{id:1,bounds:{x:0,y:0,width:160,height:300},scaleFactor:1}]},
-    desktopCapturer:{getSources:async()=>[{display_id:'1',thumbnail:native(current.image)}]},
+    desktopCapturer:{getSources:async()=>[{display_id:'1',thumbnail:native(current.image,counters)}]},
     globalShortcut:{register:(name,fn)=>{if(occupied)return false;shortcuts.set(name,fn);return true;},unregister:name=>shortcuts.delete(name),unregisterAll:()=>shortcuts.clear()},
     Tray:class {setToolTip(text){this.text=text;}setContextMenu(){}on(){}destroy(){}},Menu:{buildFromTemplate:items=>items},
-    nativeImage:{createFromBitmap(){return {};},createFromBuffer:b=>native(PNG.sync.read(b))},
+    nativeImage:{createFromBitmap(){return {};},createFromBuffer:b=>native(PNG.sync.read(b),counters)},
     dialog:{showMessageBox:async()=>({response:1}),showMessageBoxSync:()=>1,showSaveDialog:async()=>({filePath:output,canceled:false}),showOpenDialog:async()=>({filePaths:[path.dirname(output)],canceled:false})}
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../src/main.js'),'utf8'),{
@@ -51,7 +52,7 @@ async function harness(t, occupied = false, automatic = false, initialImage = im
   await Promise.resolve();
   const call=(name,...args)=>ipc.get(`longshot:${name}`)({sender:windows[0].webContents},...args);
   const overlayCall=(name,...args)=>ipc.get(`longshot:${name}`)({sender:windows.at(-1).webContents},...args);
-  return {windows,call,overlayCall,shortcuts,current,output,sessions,ipc,getAutoOptions:()=>autoOptions};
+  return {windows,call,overlayCall,shortcuts,current,output,sessions,ipc,counters,getAutoOptions:()=>autoOptions};
 }
 test('capture selection, global shortcuts, PNG save and cleanup operate as one workflow', async t=>{
   const h=await harness(t);
@@ -114,5 +115,14 @@ test('automatic capture retains a frame when single-image output exceeds its lim
   current.metadata=()=>{const value=metadata();return current.frames.length>=2?{...value,size:null,issue:'单张图片超限'}:value;};
   const result=h.getAutoOptions().append(PNG.sync.write(image(140)));
   assert.equal(current.frames.length,2);assert.notEqual(result.limit,true);assert.match(result.note,/分段导出/);
+  await h.shortcuts.get('CommandOrControl+Shift+2')();
+});
+
+test('native stability probes do not encode PNG until a full-resolution frame is committed',async t=>{
+  const h=await harness(t,false,true);await h.call('start','1',{automatic:true,ticks:2,settle:350});
+  await h.overlayCall('select',{x:0,y:0,width:160,height:300});h.current.image=image(140);
+  const before=h.counters.encodes,options=h.getAutoOptions(),probe=await options.shot();
+  assert.equal(h.counters.encodes,before);assert.equal(probe.fingerprint.length,96*60*4);assert.equal(probe.width,160);assert.equal(probe.height,300);
+  options.append(probe);assert.equal(h.counters.encodes,before+1);assert.equal(h.sessions[0].frames[1].width,160);assert.equal(h.sessions[0].frames[1].height,300);
   await h.shortcuts.get('CommandOrControl+Shift+2')();
 });

@@ -9,7 +9,7 @@ const { runAuto } = require('./auto-capture');
 const { pngDimensions } = require('./stitch');
 let main, overlay, tray, session, display, region, frozen, phase = 'idle', message = '', selecting = false, capturePromise = null;
 let exporting = false;
-let autoSettings = { automatic: false, ticks: 2, settle: 1200 }, autoAbort = null, autoPromise = null, autoDriver = null, finishing = false;
+let autoSettings = { automatic: false, ticks: 2, settle: 350 }, autoAbort = null, autoPromise = null, autoDriver = null, finishing = false;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const CAPTURE_KEY = 'CommandOrControl+Shift+1', FINISH_KEY = 'CommandOrControl+Shift+2';
 function state() { return { phase, message, exporting, ...(session ? session.metadata() : { frames: [], version: 0, saved: false, size: null, issue: '尚未采集' }) }; }
@@ -35,8 +35,11 @@ async function snapshot(selected) {
   if (!source || source.thumbnail.isEmpty()) throw new Error('无法读取屏幕，请检查系统录屏权限');
   return source.thumbnail;
 }
-function crop(image) {
-  return image.crop(cropBounds(region, display.bounds, image.getSize())).toPNG();
+function croppedImage(image) { return image.crop(cropBounds(region, display.bounds, image.getSize())); }
+function crop(image) { return croppedImage(image).toPNG(); }
+function sampleImage(image) {
+  const size = image.getSize();
+  return { ...size, fingerprint: image.resize({ width: 96, height: 60, quality: 'good' }).toBitmap({ scaleFactor: 1 }), toPNG: () => image.toPNG() };
 }
 function cancelSelection() {
   if (overlay && !overlay.isDestroyed()) overlay.close();
@@ -49,8 +52,8 @@ async function start(id, settings = {}) {
     const answer = await dialog.showMessageBox(main, { type: 'question', message: '当前长截图尚未保存。开始新采集会丢弃这些截图。', buttons: ['返回保存', '丢弃并继续'], defaultId: 0, cancelId: 0 });
     if (answer.response !== 1) return state();
   }
-  autoSettings = { automatic: settings.automatic === true, ticks: Number(settings.ticks ?? 2), settle: Number(settings.settle ?? 1200) };
-  if (![1,2,3].includes(autoSettings.ticks) || ![800,1200,2000].includes(autoSettings.settle)) throw new Error('滚动幅度或等待时间无效');
+  autoSettings = { automatic: settings.automatic === true, ticks: Number(settings.ticks ?? 2), settle: Number(settings.settle ?? 350) };
+  if (![1,2,3].includes(autoSettings.ticks) || ![350,800,1200,2000].includes(autoSettings.settle)) throw new Error('滚动幅度或等待时间无效');
   selecting = true;
   try {
     display = screen.getAllDisplays().find(d => String(d.id) === String(id));
@@ -104,16 +107,19 @@ function beginAuto() {
   const leftTop = physical({ x: Math.round(display.bounds.x + region.x + 2), y: Math.round(display.bounds.y + region.y + 2) });
   const rightBottom = physical({ x: Math.round(display.bounds.x + region.x + region.width - 2), y: Math.round(display.bounds.y + region.y + region.height - 2) });
   const center = physical({ x: Math.round(display.bounds.x + region.x + region.width / 2), y: Math.round(display.bounds.y + region.y + region.height / 2) });
+  let baselineSample = sampleImage(nativeImage.createFromBuffer(fs.readFileSync(path.join(session.directory, session.frames.at(-1).file))));
   const work = runAuto({
     driver, bounds: { x: center.x, y: center.y, left: leftTop.x, top: leftTop.y, right: rightBottom.x, bottom: rightBottom.y },
     ticks: autoSettings.ticks, settle: autoSettings.settle, signal: controller.signal,
-    shot: async () => crop(await snapshot(display)),
-    baseline: () => fs.readFileSync(path.join(session.directory, session.frames.at(-1).file)),
-    append: buffer => {
+    shot: async () => sampleImage(croppedImage(await snapshot(display))),
+    baseline: () => baselineSample,
+    append: sample => {
+      const buffer = Buffer.isBuffer(sample) ? sample : sample.toPNG();
       const result = session.append(buffer), last = session.frames.at(-1);
+      if (result.added) baselineSample = sample.fingerprint ? sample : sampleImage(nativeImage.createFromBuffer(buffer));
       if (last.overlap === null) return { ...result, unaligned: true };
       if (!session.metadata().size) result.note += '；已超过单张上限，需分段导出（全部屏次已保留）';
-      return { ...result, limit: session.frames.length >= 40 };
+      return { ...result, advance: last.height - last.overlap, height: last.height, limit: session.frames.length >= 40 };
     },
     progress: text => note(`自动采集 ${session.frames.length} 屏 · ${text}`)
   });
