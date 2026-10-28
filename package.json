@@ -1,0 +1,45 @@
+{
+  "name": "longshot-desktop",
+  "version": "1.0.0",
+  "description": "Windows 本地滚动长截图工具",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "build:win": "electron-builder --win nsis --x64 --publish never"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonyang2026-lab/gxy.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/tonyang2026-lab/gxy/issues"
+  },
+  "homepage": "https://github.com/tonyang2026-lab/gxy#readme",
+  "dependencies": {
+    "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "lab.gxy.longshot",
+    "productName": "长截图工具",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
