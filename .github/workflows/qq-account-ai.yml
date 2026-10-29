@@ -1,0 +1,24 @@
+name: Test QQ account AI
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/qq-account-ai]
+  pull_request:
+    paths: ['qq-account-ai/**', '.github/workflows/qq-account-ai.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: qq-account-ai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm test
