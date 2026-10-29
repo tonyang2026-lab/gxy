@@ -10,7 +10,7 @@ async function body(request){
   return Buffer.concat(chunks);
 }
 function createApp(config,{model=new Ollama(config),adminToken=crypto.randomBytes(24).toString('hex'),store=path.join(__dirname,'../data/seen.json'),qq=new QQApi(config),now=()=>Date.now()}={}){
-  const brain=new Brain(model,config.topics),queue=new ReplyQueue({config,brain,qq,store,now});let simulating=false;
+  const brain=new Brain(model,config.topics,{name:config.botName,aliases:config.botAliases}),queue=new ReplyQueue({config,brain,qq,store,now});let simulating=false;
   const send=(response,status,value)=>{response.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});response.end(JSON.stringify(value));};
   const authorized=request=>{const input=request.headers['x-dashboard-token'];if(typeof input!=='string')return false;const a=Buffer.from(input),b=Buffer.from(adminToken);return a.length===b.length&&crypto.timingSafeEqual(a,b);};
   const server=http.createServer(async(request,response)=>{
@@ -35,7 +35,7 @@ function createApp(config,{model=new Ollama(config),adminToken=crypto.randomByte
       }
       if(url.pathname.startsWith('/api/')){
         if(!authorized(request))return send(response,401,{error:'请使用启动窗口显示的完整控制台地址打开'});
-        if(url.pathname==='/api/status'&&request.method==='GET')return send(response,200,{live:config.live,sandbox:config.sandbox,appIdPresent:!!config.appId,secretPresent:!!config.secret,groupAllowlistConfigured:!!config.groups.length,ordinaryGroupMessages:false,model:config.model,ollama:await model.health(),queue:queue.status()});
+        if(url.pathname==='/api/status'&&request.method==='GET')return send(response,200,{live:config.live,sandbox:config.sandbox,botName:config.botName,botAliases:config.botAliases,appIdPresent:!!config.appId,secretPresent:!!config.secret,groupAllowlistConfigured:!!config.groups.length,ordinaryGroupMessages:false,model:config.model,ollama:await model.health(),queue:queue.status()});
         if(url.pathname==='/api/simulate'&&request.method==='POST'){
           if(simulating||queue.working)return send(response,429,{error:'本地模型正在处理，请稍后再试'});
           const input=JSON.parse((await body(request)).toString('utf8'));

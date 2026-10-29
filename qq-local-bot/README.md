@@ -16,7 +16,7 @@
    首次需下载模型。建议电脑至少8GB内存；资源紧张可改用 `qwen2.5:1.5b`，并在本机 `.env` 修改 `OLLAMA_MODEL`。实际速度取决于硬件。
 3. 在源码根目录双击 **启动QQ机器人.bat**。第一次会复制 `.env.example` 为 `qq-local-bot/.env`，默认只是本地测试，不发QQ消息。没有额外npm依赖需要安装。
 4. 浏览器会自动打开带本机控制台令牌的地址。点击刷新，确认模型就绪。
-5. 输入一条消息：勾选“@了机器人”测试回答；取消勾选测试是否值得主动参与。模拟消息不发送到QQ。
+5. 输入一条消息：输入“独角兽，你好”即可测试名字触发；勾选“@了机器人”也会直接回答。没有@也不包含名字时，才测试是否值得主动参与。模拟消息不发送到QQ。
 
 手动启动：
 
@@ -86,3 +86,11 @@ npm test
 - [QQ官方事件推送文档](https://github.com/tencent-connect/bot-docs/blob/645787a45937e5d9c4f0f61afefdffde0f38696e/docs/develop/api-v2/dev-prepare/interface-framework/event-emit.md)：Webhook HTTPS回调与群@事件；文档明确WebSocket链路逐步下线。
 - [QQ官方Ed25519验签算法](https://github.com/tencent-connect/bot-docs/blob/645787a45937e5d9c4f0f61afefdffde0f38696e/docs/develop/api-v2/dev-prepare/interface-framework/sign.md)。
 - [官方Python SDK群消息发送接口](https://github.com/tencent-connect/botpy/blob/e25f3e84bad7217357d8200a9d12939b58285b84/botpy/api.py)，[鉴权实现](https://github.com/tencent-connect/botpy/blob/e25f3e84bad7217357d8200a9d12939b58285b84/botpy/robot.py)。本项目依其HTTP协议实现，不依赖已过时的WebSocket连接。
+
+## 机器人名字：独角兽
+
+默认名字为“独角兽”。本地控制台中，只要文本包含完整名字（例如“独角兽”“独角兽在吗”“帮我看看，独角兽”），即按明确呼叫处理，不需要@，也不走普通插话的60秒冷却。机器人消息仍会被忽略。模型系统提示会告知这个名字。
+
+可在本机 `.env` 设置 `BOT_NAME=独角兽`；可选 `BOT_ALIASES` 允许最多5个逗号分隔的昵称。旧版 `.env` 没有这些字段时默认名字仍为独角兽。
+
+此规则目前用于本地模拟及未来获得授权的消息适配器。真实QQ标准适配器仍只接收群@事件：只在群里打出名字而平台未推送这条消息时，程序无法看到，也不会回复。名字不是新增的读取群消息权限。

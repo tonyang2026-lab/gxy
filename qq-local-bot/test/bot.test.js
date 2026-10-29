@@ -86,3 +86,30 @@ test('local test mode does not expose an active QQ callback',async t=>{
   const app=await running(t,config(false),model(),{reply:async()=>{throw new Error('must not send');}});
   const response=await fetch(app.url+'/qq/events',{method:'POST',...signed(event())});assert.equal(response.status,404);
 });
+test('Unicorn name triggers even a short message without @ or classifier calls',async()=>{
+  let calls=0;const b=new Brain({chat:async()=>{calls++;return '{}';}});
+  for(const text of ['独角兽','独角兽在吗','帮我看看，独角兽']){
+    const result=await b.worthReply({text},clock);assert.equal(result.reply,true);assert.match(result.reason,/独角兽/);
+  }
+  assert.equal(calls,0);assert.equal((await b.worthReply({text:'独角兽',bot:true})).reply,false);
+  assert.equal((await b.worthReply({text:'独角'})).reply,false);
+});
+test('name call bypasses optional chatter cooldown and model is given its name',async()=>{
+  const inputs=[];const b=new Brain({chat:async messages=>{inputs.push(messages);return JSON.stringify({should_reply:true,confidence:.9});}});
+  assert.equal((await b.worthReply({text:'请问如何解决这个问题？',group:'g'},clock)).reply,true);
+  assert.equal((await b.worthReply({text:'独角兽',group:'g'},clock+1000)).reply,true);
+  await b.reply({text:'你叫什么名字',group:'g',author:'u'},clock);assert.match(inputs[1][0].content,/名字叫“独角兽”/);
+});
+test('configured aliases work while ordinary QQ name-only events remain unsupported',async t=>{
+  const c=configuration({BOT_NAME:'独角兽',BOT_ALIASES:'Unicorn,小角'});
+  const b=new Brain({chat:async()=> '{}'},[],{name:c.botName,aliases:c.botAliases});
+  assert.equal((await b.worthReply({text:'UNICORN，你好'})).reply,true);
+  const q=new ReplyQueue({config:config(),brain:{reply:async()=>{throw new Error('must not reply');}},qq:{reply:async()=>{throw new Error('must not send');}},store:temporary(t),now:()=>clock});
+  assert.equal(q.enqueue({...event({content:'独角兽，你好'}),t:'GROUP_MESSAGE_CREATE'}).accepted,false);
+});
+test('local endpoint replies to name without @ and reports bot identity',async t=>{
+  const app=await running(t,config(false),model(),{reply:async()=>{throw new Error('must not send');}}),headers={'X-Dashboard-Token':'test-dashboard-token','Content-Type':'application/json'};
+  const reply=await(await fetch(app.url+'/api/simulate',{method:'POST',headers,body:JSON.stringify({text:'独角兽',mentioned:false})})).json();
+  assert.equal(reply.reply,true);assert.ok(reply.answer);assert.equal(reply.localOnly,true);
+  const state=await(await fetch(app.url+'/api/status',{headers})).json();assert.equal(state.botName,'独角兽');assert.equal(state.ordinaryGroupMessages,false);
+});
