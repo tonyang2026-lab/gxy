@@ -6,8 +6,10 @@ function configuration(env = process.env) {
   const botName = (env.BOT_NAME || '独角兽').trim();
   const botAliases = [...new Set((env.BOT_ALIASES || '').split(/[,，]/).map(s=>s.trim()).filter(Boolean))];
   if (!botName || [botName,...botAliases].some(name=>name.length>20||/[\r\n\x00-\x1f]/.test(name)) || botAliases.length>5) throw new Error('机器人名字须为1～20个字符，昵称最多5个');
+  const transport = env.QQ_TRANSPORT || 'websocket';
+  if (!['websocket','webhook'].includes(transport)) throw new Error('QQ_TRANSPORT须为websocket或webhook');
   const live = env.QQ_LIVE === 'true';
   if (live && (!env.QQ_APP_ID || !env.QQ_APP_SECRET)) throw new Error('正式模式需要在本机.env设置QQ_APP_ID和QQ_APP_SECRET，不要在聊天中发送密钥');
-  return { port, live, botName, botAliases, appId: env.QQ_APP_ID || '', secret: env.QQ_APP_SECRET || '', webhookSecret: env.QQ_WEBHOOK_SECRET || env.QQ_APP_SECRET || '', sandbox: env.QQ_SANDBOX !== 'false', groups: (env.QQ_ALLOWED_GROUPS || '').split(',').map(s=>s.trim()).filter(Boolean), topics: (env.BOT_TOPICS || '').split(/[,，]/).map(s=>s.trim()).filter(Boolean), model: env.OLLAMA_MODEL || 'qwen2.5:3b', ollamaBase: base.origin };
+  return { port, live, transport, botName, botAliases, appId: env.QQ_APP_ID || '', secret: env.QQ_APP_SECRET || '', webhookSecret: env.QQ_WEBHOOK_SECRET || env.QQ_APP_SECRET || '', sandbox: env.QQ_SANDBOX !== 'false', groups: (env.QQ_ALLOWED_GROUPS || '').split(',').map(s=>s.trim()).filter(Boolean), topics: (env.BOT_TOPICS || '').split(/[,，]/).map(s=>s.trim()).filter(Boolean), model: env.OLLAMA_MODEL || 'qwen2.5:3b', ollamaBase: base.origin };
 }
 module.exports = { configuration };

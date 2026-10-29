@@ -94,3 +94,24 @@ npm test
 可在本机 `.env` 设置 `BOT_NAME=独角兽`；可选 `BOT_ALIASES` 允许最多5个逗号分隔的昵称。旧版 `.env` 没有这些字段时默认名字仍为独角兽。
 
 此规则目前用于本地模拟及未来获得授权的消息适配器。真实QQ标准适配器仍只接收群@事件：只在群里打出名字而平台未推送这条消息时，程序无法看到，也不会回复。名字不是新增的读取群消息权限。
+
+## 个人电脑通过 WebSocket 连接
+
+平台「开发设置 → 事件订阅与回调」选择 WebSocket。本程序新增该连接方式，无需公网 HTTPS 地址。需要 Node.js 24，先启动 Ollama 并下载模型。
+
+首次双击根目录 `启动QQ机器人.bat` 生成 `qq-local-bot/.env`，然后关闭启动窗口。用记事本编辑该文件：
+
+```dotenv
+QQ_LIVE=true
+QQ_TRANSPORT=websocket
+QQ_APP_ID=填写自己的AppID
+QQ_APP_SECRET=填写自己的AppSecret
+QQ_SANDBOX=false
+QQ_ALLOWED_GROUPS=
+```
+
+保存后重新启动。看到「QQ WebSocket已连接」后，在目标群 @机器人。允许列表为空时只记录群标识，不发送回复。在本机控制台查看 queue.lastGroup（group_openid），填入 QQ_ALLOWED_GROUPS 后重启。该标识不是QQ群号码。只有明确希望回复所有已授权添加的群时才填写 `*`。
+
+若平台使用测试环境，改为 QQ_SANDBOX=true，并在平台配置测试范围。密钥仅保存在本机 .env。连接或鉴权失败时检查凭证、接入方式、网络及平台权限。普通群消息仍取决于平台事件权限，当前只处理 GROUP_AT_MESSAGE_CREATE。私聊尚未实现。
+
+实现参考腾讯官方 SDK 的 Gateway 协议（botpy/gateway.py），包含 Identify、心跳确认、Resume 与退避重连。离线测试通过不代表真实 QQ 账号连接已验证；需要用户本机实际接入测试。
