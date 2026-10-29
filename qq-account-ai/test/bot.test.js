@@ -26,3 +26,10 @@ test('auto participation can be disabled and old/image messages are ignored',()=
  assert.equal(bot.accept(event({time:0})),false);
  assert.equal(bot.accept(event({message:[{type:'image',data:{file:'x'}}]})),false);
 });
+test('group diagnostics explain rejection without logging message content',()=>{
+ const logs=[],bot=new AccountBot({users:[],groups:[],auto:false},{},()=>{},s=>logs.push(s));
+ assert.equal(bot.accept(event({message_type:'group',group_id:789,message:[{type:'text',data:{text:'secret-content'}}]})),false);
+ assert.match(logs[0],/ALLOWED_GROUPS/);assert.match(logs[0],/789/);assert.ok(!logs[0].includes('secret-content'));
+ bot.accept(event({message_type:'group',group_id:789,user_id:456}));assert.match(logs[1],/自己发送/);
+ bot.accept(event({message_type:'group',group_id:789,message:'text'}));assert.match(logs[2],/Array/);
+});

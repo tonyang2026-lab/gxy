@@ -4,6 +4,7 @@ const {Ollama}=require('./ollama');
 const {AccountBot}=require('./bot');
 try{
  const config=configuration(),model=new Ollama(config),pending=new Map();let socket,stopping=false,timer,attempt=0,echo=0;
+ console.log(`允许群号：${config.groups.join(',')||'未填写（不会回复群聊）'}；普通消息自动判断：${config.auto?'开启':'关闭'}`);
  const bot=new AccountBot(config,new Brain(model,[],{name:'独角兽'}),(action,params)=>new Promise((resolve,reject)=>{
   if(socket?.readyState!==1)return reject(new Error('QQ连接已断开'));
   const id=String(++echo),timeout=setTimeout(()=>{pending.delete(id);reject(new Error('QQ发送结果超时，不自动重发'));},15000);
