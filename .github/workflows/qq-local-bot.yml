@@ -1,0 +1,21 @@
+name: Test QQ local model bot
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/qq-local-bot]
+  pull_request:
+    paths: ['qq-local-bot/**', '.github/workflows/qq-local-bot.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: qq-local-bot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm test

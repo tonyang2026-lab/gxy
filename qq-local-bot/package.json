@@ -1,0 +1,9 @@
+{
+  "name": "qq-local-ollama-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QQ 官方机器人 Webhook 与 Ollama 本地模型助手",
+  "type": "commonjs",
+  "engines": { "node": ">=24" },
+  "scripts": { "start": "node --env-file-if-exists=.env src/start.js", "test": "node --test test/*.test.js" }
+}
