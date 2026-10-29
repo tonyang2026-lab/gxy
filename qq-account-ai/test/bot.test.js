@@ -33,3 +33,9 @@ test('group diagnostics explain rejection without logging message content',()=>{
  bot.accept(event({message_type:'group',group_id:789,user_id:456}));assert.match(logs[1],/自己发送/);
  bot.accept(event({message_type:'group',group_id:789,message:'text'}));assert.match(logs[2],/Array/);
 });
+test('addressed built-in group activity bypasses unavailable model and respects allowlist',async()=>{
+ const sent=[],bot=new AccountBot({users:[],groups:['789'],auto:false},{worthReply:()=>{throw Error('must not call model');}},async(...a)=>sent.push(a),()=>{});
+ assert.equal(bot.accept(event({message_type:'group',group_id:789,message:[{type:'text',data:{text:'独角兽井字棋'}}]})),true);
+ await bot.worker;assert.match(sent[0][1].message[0].data.text,/先手/);
+ assert.equal(bot.accept(event({message_type:'group',group_id:999,message:[{type:'text',data:{text:'独角兽帮助'}}]})),false);
+});
