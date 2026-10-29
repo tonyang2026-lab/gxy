@@ -43,6 +43,6 @@ test('news command reaches news service without LLM and rejects unaddressed grou
  const sent=[],news={command:async text=>text.includes('AI新闻')?'新闻原文链接':null};
  const bot=new AccountBot({users:[],groups:['789'],auto:false},{},async(...a)=>sent.push(a),()=>{},news);
  assert.equal(bot.accept(event({message_type:'group',group_id:789,message:[{type:'text',data:{text:'AI新闻'}}]})),false);
- assert.equal(bot.accept(event({message_type:'group',group_id:789,message:[{type:'text',data:{text:'独角兽AI新闻'}}]})),true);
+ assert.equal(bot.accept(event({message_type:'group',group_id:789,message_id:2,message:[{type:'text',data:{text:'独角兽AI新闻'}}]})),true);
  await bot.worker;assert.equal(sent[0][1].message[0].data.text,'新闻原文链接');
 });

@@ -1,6 +1,7 @@
 const {Activities}=require('./activities');
+const {GroupContext}=require('./group-context');
 class AccountBot{
- constructor(config,brain,send,log=console.log,news=null){Object.assign(this,{config,brain,send,log,news});this.activities=new Activities();this.pending=[];this.seen=new Map();this.rate=new Map();this.working=false;this.worker=Promise.resolve();}
+ constructor(config,brain,send,log=console.log,news=null){Object.assign(this,{config,brain,send,log,news});this.activities=new Activities();this.context=new GroupContext();this.pending=[];this.seen=new Map();this.rate=new Map();this.working=false;this.worker=Promise.resolve();}
  accept(e){
   if(e.post_type!=='message'||!['private','group'].includes(e.message_type))return false;
   const skip=reason=>{if(e.message_type==='group')this.log(`群消息未回复：${reason}（群号 ${String(e.group_id).replace(/[^0-9]/g,'').slice(0,20)}）`);return false;};
@@ -17,13 +18,18 @@ class AccountBot{
   if(!text||text.length>4000)return skip('没有可处理的文字，或文字过长');
   const mentioned=e.message.some(s=>s.type==='at'&&String(s.data?.qq)===String(e.self_id));
   const name=text.normalize('NFKC').includes('独角兽');
+  this.seen.set(key,Date.now()+3600000);while(this.seen.size>5000)this.seen.delete(this.seen.keys().next().value);
+  const direct=mentioned||name;
+  const scope=`${group?'group':'private'}:${target}`;
+  const context=group&&this.config.auto?this.context.add(scope,String(e.user_id),text):[];
+  const directedElsewhere=e.message.some(s=>s.type==='at'&&String(s.data?.qq)!==String(e.self_id));
   if(group&&!mentioned&&!name&&!this.config.auto)return skip('自动参与关闭，请@AI账号或发送独角兽你好');
   const rateKey=JSON.stringify([e.message_type,target,e.user_id]);
   if(Date.now()-(this.rate.get(rateKey)||0)<5000||this.pending.length+(this.working?1:0)>=5)return skip('请求过快或排队已满，稍后再试');
-  this.seen.set(key,Date.now()+3600000);while(this.seen.size>5000)this.seen.delete(this.seen.keys().next().value);
   this.rate.set(rateKey,Date.now());if(this.rate.size>2000)this.rate.delete(this.rate.keys().next().value);
   if(group)this.log(`收到允许群 ${target} 的文字消息，正在处理…`);
-  this.pending.push({group,target,author:String(e.user_id),text,mentioned,at:Date.now()});
+  const item={group,target,author:String(e.user_id),text,mentioned,direct,context,directedElsewhere,at:Date.now()};
+  if(group&&!direct){const previous=this.pending.findIndex(p=>p.group&&p.target===target&&!p.direct);if(previous>=0)this.pending.splice(previous,1);this.pending.push(item);}else this.pending.unshift(item);
   if(!this.working){this.working=true;this.worker=this.drain();}return true;
  }
  async drain(){
@@ -33,11 +39,12 @@ class AccountBot{
    let answer=null;
    if(this.news&&(!e.group||e.mentioned||/^独角兽/.test(e.text.trim())))answer=await this.news.command(e.text);
    if(answer===null)answer=this.activities.handle({text:e.text,group:scope,author:e.author,mentioned:e.mentioned,isGroup:e.group});
-   if(answer===null&&e.group){const decision=await this.brain.worthReply({text:e.text,mentioned:e.mentioned,group:scope});if(!decision.reply){this.log(`群消息判定不回复：${decision.reason}`);continue;}}
-   if(answer===null)answer=await this.brain.reply({text:e.text,group:scope,author:e.author});
-   if(Date.now()-e.at>180000)continue;
+   if(answer===null&&e.group){const decision=await this.brain.worthReply({text:e.text,mentioned:e.mentioned,group:scope,context:e.context,directedElsewhere:e.directedElsewhere});if(!decision.reply){this.log(`群消息判定不回复：${decision.reason}`);continue;}}
+   if(answer===null)answer=await this.brain.reply({text:e.text,group:scope,author:e.author,context:e.context});
+   if(Date.now()-e.at>(e.group&&!e.direct?90000:180000))continue;
    // Text segment prevents generated CQ strings from becoming mentions/actions.
    await this.send(e.group?'send_group_msg':'send_private_msg',{[e.group?'group_id':'user_id']:e.target,message:[{type:'text',data:{text:answer}}]});
+   if(e.group&&this.config.auto){this.context.add(scope,'assistant',answer);if(!e.direct)this.brain.markAutoSent?.(scope);}
    this.log(e.group?'已回复一条群消息':'已回复一条私聊消息');
   }catch(error){this.log(`回复失败：${error.name==='TimeoutError'?'本地模型超时':error.message}`);}}}finally{this.working=false;}
  }
