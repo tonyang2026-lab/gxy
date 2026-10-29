@@ -1,6 +1,6 @@
 const {Activities}=require('./activities');
 class AccountBot{
- constructor(config,brain,send,log=console.log){Object.assign(this,{config,brain,send,log});this.activities=new Activities();this.pending=[];this.seen=new Map();this.rate=new Map();this.working=false;this.worker=Promise.resolve();}
+ constructor(config,brain,send,log=console.log,news=null){Object.assign(this,{config,brain,send,log,news});this.activities=new Activities();this.pending=[];this.seen=new Map();this.rate=new Map();this.working=false;this.worker=Promise.resolve();}
  accept(e){
   if(e.post_type!=='message'||!['private','group'].includes(e.message_type))return false;
   const skip=reason=>{if(e.message_type==='group')this.log(`群消息未回复：${reason}（群号 ${String(e.group_id).replace(/[^0-9]/g,'').slice(0,20)}）`);return false;};
@@ -30,7 +30,9 @@ class AccountBot{
   try{while(this.pending.length){const e=this.pending.shift();try{
    if(Date.now()-e.at>120000)continue;
    const scope=`${e.group?'group':'private'}:${e.target}`;
-   let answer=this.activities.handle({text:e.text,group:scope,author:e.author,mentioned:e.mentioned,isGroup:e.group});
+   let answer=null;
+   if(this.news&&(!e.group||e.mentioned||/^独角兽/.test(e.text.trim())))answer=await this.news.command(e.text);
+   if(answer===null)answer=this.activities.handle({text:e.text,group:scope,author:e.author,mentioned:e.mentioned,isGroup:e.group});
    if(answer===null&&e.group){const decision=await this.brain.worthReply({text:e.text,mentioned:e.mentioned,group:scope});if(!decision.reply){this.log(`群消息判定不回复：${decision.reason}`);continue;}}
    if(answer===null)answer=await this.brain.reply({text:e.text,group:scope,author:e.author});
    if(Date.now()-e.at>180000)continue;

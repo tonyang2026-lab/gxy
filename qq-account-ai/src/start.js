@@ -2,15 +2,22 @@ const {configuration}=require('./config');
 const {Brain}=require('./brain');
 const {Ollama}=require('./ollama');
 const {AccountBot}=require('./bot');
+const {News}=require('./news');
+const {NewsScheduler}=require('./news-scheduler');
 try{
  const config=configuration(),model=new Ollama(config),pending=new Map();let socket,stopping=false,timer,attempt=0,echo=0;
  console.log(`允许群号：${config.groups.join(',')||'未填写（不会回复群聊）'}；普通消息自动判断：${config.auto?'开启':'关闭'}`);
- const bot=new AccountBot(config,new Brain(model,[],{name:'独角兽'}),(action,params)=>new Promise((resolve,reject)=>{
+ const news=new News();
+ const send=(action,params)=>new Promise((resolve,reject)=>{
   if(socket?.readyState!==1)return reject(new Error('QQ连接已断开'));
   const id=String(++echo),timeout=setTimeout(()=>{pending.delete(id);reject(new Error('QQ发送结果超时，不自动重发'));},15000);
   pending.set(id,{resolve,reject,timeout});
   try{socket.send(JSON.stringify({action,params,echo:id}));}catch{clearTimeout(timeout);pending.delete(id);reject(new Error('QQ发送失败'));}
- }));
+ });
+ const bot=new AccountBot(config,new Brain(model,[],{name:'独角兽'}),send,console.log,news);
+ const scheduler=config.newsEnabled?new NewsScheduler(news,config.newsGroups.map(id=>({type:'group',id})),send,()=>socket?.readyState===1):null;
+ scheduler?.start();
+ console.log(config.newsEnabled?'AI新闻：每小时检查，有新内容才推送；首次检查在启动一小时后。':'AI新闻定时推送未开启，可发送独角兽AI新闻手动查询。');
  function connect(){
   const address=new URL(config.endpoint);address.searchParams.set('access_token',config.token);
   console.log('正在连接本机NapCat…');socket=new WebSocket(address);
@@ -27,7 +34,7 @@ try{
    if(!stopping)timer=setTimeout(connect,Math.min(1000*2**attempt++,30000));
   });
  }
- for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopping=true;clearTimeout(timer);socket?.close();setTimeout(()=>process.exit(0),500).unref();});
+ for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopping=true;scheduler?.stop();clearTimeout(timer);socket?.close();setTimeout(()=>process.exit(0),500).unref();});
  model.health().then(state=>console.log(state.ready?'Ollama模型已就绪':'Ollama未就绪，请先启动服务并下载配置中的模型。'));
  connect();
 }catch(error){console.error(error.message);process.exitCode=1;}

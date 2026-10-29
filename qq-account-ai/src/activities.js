@@ -6,6 +6,7 @@ function bestMove(board){let best=-2,move=-1;for(const i of [4,0,2,6,8,1,3,5,7])
 const digits=['①','②','③','④','⑤','⑥','⑦','⑧','⑨'];
 function render(board){return [0,3,6].map(start=>board.slice(start,start+3).map((v,i)=>v==='X'?'❌':v==='O'?'⭕':digits[start+i]).join(' ')).join('\n');}
 const HELP=`独角兽的工具箱：
+• AI新闻（近48小时，最多5条，附原文链接）
 • 井字棋 / 落子 5 / 棋盘 / 结束游戏
 • 猜数字 / 猜 50（范围1～100，最多10次）
 • 掷骰子 / 掷骰子 3（最多10颗）
