@@ -1,7 +1,7 @@
 class Ollama {
   constructor(config,fetcher=fetch){this.config=config;this.fetch=fetcher;}
   async chat(messages,{json=false}={}) {
-    const response=await this.fetch(`${this.config.ollamaBase}/api/chat`,{method:'POST',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:this.config.model,stream:false,keep_alive:'10m',messages,...(json?{format:'json'}:{}),options:{temperature:json?0:0.3,num_predict:json?120:384,num_ctx:4096}}),signal:AbortSignal.timeout(45000)});
+    const response=await this.fetch(`${this.config.ollamaBase}/api/chat`,{method:'POST',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:this.config.model,stream:false,keep_alive:'10m',messages,...(json?{format:'json'}:{}),options:{temperature:json?0:0.65,num_predict:json?120:384,num_ctx:4096}}),signal:AbortSignal.timeout(45000)});
     if(!response.ok)throw new Error(`本地模型请求失败（${response.status}），请确认Ollama和模型已经就绪`);
     const result=await response.json();
     if(typeof result.message?.content!=='string'||!result.message.content.trim())throw new Error('本地模型没有返回可用内容');
