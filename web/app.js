@@ -4,6 +4,34 @@ let currentRole='viewer';
 let inspectingTemplate=false;
 let busy = false;
 let timer;
+const PAGES={
+  library:{id:'library',title:'模板库',description:'查找和下载团队保存的模板，按店铺、地区与类目筛选。',roles:['admin','editor','viewer']},
+  import:{id:'import',title:'上传模板',description:'保存原始模板，自动读取来源，只需确认店铺名称。',roles:['admin','editor']},
+  batch:{id:'batch-panel',title:'同地区批量生成',description:'上传一次，为同地区店铺生成独立模板并分别入库。',roles:['admin','editor']},
+  inventory:{id:'inventory',title:'库存识别',description:'上传商品库存表，查看可用模板与需要补充的类目。',roles:['admin','editor','viewer']},
+  shops:{id:'shop-roster-panel',title:'店铺管理',description:'管理店铺及各地区的卖家记号。',roles:['admin']},
+  ai:{id:'ai-settings-panel',title:'AI 设置',description:'独立配置 AI 服务商、模型与 API 密钥。',roles:['admin']},
+  members:{id:'admin-panel',title:'成员管理',description:'添加团队成员，分配管理员、编辑者和只读权限。',roles:['admin']},
+  backup:{id:'backup-panel',title:'备份恢复',description:'备份模板和店铺目录，或将备份恢复到空模板库。',roles:['admin','editor','viewer']}
+};
+function showPage(raw=location.hash.slice(1)){
+  const alias=Object.keys(PAGES).find(key=>PAGES[key].id===raw);
+  const requested=Object.prototype.hasOwnProperty.call(PAGES,raw)?raw:alias||'library';
+  const key=PAGES[requested].roles.includes(currentRole)?requested:'library';
+  for(const [name,page] of Object.entries(PAGES))$(page.id).hidden=name!==key;
+  for(const link of document.querySelectorAll('nav [data-route]')){
+    const allowed=PAGES[link.dataset.route].roles.includes(currentRole);link.hidden=!allowed;
+    link.classList.toggle('active',link.dataset.route===key);
+    if(link.dataset.route===key)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');
+  }
+  $('library-stats').hidden=key!=='library';
+  document.querySelector('.heading h1').textContent=PAGES[key].title;
+  document.querySelector('.heading p').textContent=PAGES[key].description;
+  $('breadcrumb').textContent='工作空间 / '+PAGES[key].title;
+  $('workspace').dataset.page=key;document.title=PAGES[key].title+' · 模板仓';
+  if(raw!==key)history.replaceState(null,'','#'+key);
+}
+window.addEventListener('hashchange',()=>{if(!$('workspace').hidden){showPage();window.scrollTo({top:0,behavior:'instant'});}});
 function notify(text, error=false) {
   clearTimeout(timer); $('status').textContent=text; $('status').className=error?'error':'';
   $('status').style.display='block'; timer=setTimeout(()=>$('status').style.display='none',8000);
@@ -72,7 +100,7 @@ async function enter() {
   resetInventory();$('inventory-file').value='';
   $('account').textContent=me.username+' · '+({admin:'管理员',editor:'编辑者',viewer:'只读'}[me.role]);
   $('login-screen').hidden=true;$('workspace').hidden=false;
-  $('import').hidden=me.role==='viewer';$('batch-panel').hidden=me.role==='viewer';$('ai-settings-panel').hidden=me.role!=='admin';$('shop-roster-panel').hidden=me.role!=='admin';await loadAISettings();if(me.role==='admin')await loadShopEditor();$('admin-panel').hidden=me.role!=='admin';
+  showPage();await loadAISettings();if(me.role==='admin')await loadShopEditor();
   document.querySelector('.restore-label').hidden=me.role!=='admin';
   await load();
 }
