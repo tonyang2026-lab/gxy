@@ -157,6 +157,32 @@ def delete_template(root, ident):
     return {**result,'id':ident,'filename':result['filenames'][0]}
 
 
+def download_templates(root, identifiers):
+    import io
+    import re
+    if not isinstance(identifiers,list) or not 1<=len(identifiers)<=100 or any(not isinstance(ident,str) or not ident or len(ident)>200 for ident in identifiers) or len(set(identifiers))!=len(identifiers):
+        raise ValueError('请选择 1–100 份不同表格；也可逐类别单独下载')
+    root=Path(root);db=connect(root)
+    try:
+        files=[];total=0
+        for ident in identifiers:
+            row=db.execute('SELECT * FROM templates WHERE id=?',(ident,)).fetchone()
+            if row is None:raise ValueError('对应模板已被删除，请重新识别后下载')
+            raw=verified(root,row);total+=len(raw)
+            if total>100*1024*1024:raise ValueError('表格合计超过 100 MB，请逐类别下载')
+            name=re.sub(r'[^\w .()-]','_',row['original_name'].replace('\\','/').rsplit('/',1)[-1])
+            suffix=Path(row['file']).suffix
+            if not name.lower().endswith(suffix.lower()):name+=suffix
+            name=Path(name).stem[:110]+Path(name).suffix
+            files.append((ident,name,raw))
+        if len(files)==1:return files[0][2],files[0][1]
+        out=io.BytesIO()
+        with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
+            for ident,name,raw in files:z.writestr(hashlib.sha256(ident.encode()).hexdigest()[:12]+'_'+name,raw)
+        return out.getvalue(),'对应类别表格.zip'
+    finally:db.close()
+
+
 def move_shop(root, ident, shop):
     if not isinstance(shop, str) or not shop.strip() or len(shop.strip()) > 120:
         raise ValueError('店铺名称须为 1–120 字')

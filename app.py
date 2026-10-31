@@ -160,7 +160,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send({'ok': True}, cookie=f'session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + suffix)
                 return
             roles = ('admin',) if self.path in ('/api/users', '/api/restore', '/api/ai/settings', '/api/shops/import', '/api/shops/preview') else ('admin', 'editor')
-            if self.path in ('/api/logout', '/api/inventory/inspect', '/api/inventory/analyze'):
+            if self.path in ('/api/logout', '/api/inventory/inspect', '/api/inventory/analyze', '/api/templates/download'):
                 roles = None
             if not self.identity(roles):
                 return
@@ -190,6 +190,11 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/templates/delete':
                 with LOCK:
                     self.send(library.delete_templates(self.root,body.get('ids')))
+                return
+            if self.path == '/api/templates/download':
+                with LOCK:
+                    data,filename=library.download_templates(self.root,body.get('ids'))
+                self.send(data,mime='application/zip' if filename.endswith('.zip') else 'application/octet-stream',filename=filename)
                 return
             if self.path == '/api/shops/import':
                 with LOCK:

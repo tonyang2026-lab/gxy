@@ -1,4 +1,6 @@
 const $ = id => document.getElementById(id);
+const UI_REVISION='下载按钮修复版 1031.2';
+ensureInventoryShopPicker();
 let templates = [];
 let inventoryShopNames=[];
 const selectedTemplates=new Set();
@@ -135,7 +137,7 @@ let inspectedSheet=null;
 const statusLabels={available:'已有登记模板',missing:'需要补充模板',review:'类目待确认'};
 for(const option of $('marketplace').options) $('inventory-market').add(new Option(option.text,option.value));
 function resetInventory(clearMapping=true) {
-  inventoryReport=null;$('inventory-result').hidden=true;$('inventory-inputs').open=true;$('inventory-inputs').querySelector('summary').textContent='上传库存与识别设置';
+  inventoryReport=null;$('inventory-download-bar').hidden=true;$('inventory-result').hidden=true;$('inventory-inputs').open=true;$('inventory-inputs').querySelector('summary').textContent='上传库存与识别设置';
   setInventoryStep(clearMapping?1:($('inventory-mapping').hidden?1:2));
   if(clearMapping){inventoryAICache={};inventoryOverrides={};inspectedFile=null;inspectedSheet=null;$('inventory-mapping').hidden=true;}
 }
@@ -202,7 +204,7 @@ function categoryResults(report){
   });
 }
 function renderInventory(report) {
-  inventoryReport=report;const groups=categoryResults(report);
+  inventoryReport=report;const groups=categoryResults(report);updateInventoryDownload(groups);
   $('inventory-summary').textContent='识别到 '+groups.filter(g=>g.category!=='无法识别类目').length+' 类商品 · 对应模板 '+groups.filter(g=>g.template).length+' 类';
   $('inventory-context').textContent='目标店铺：'+report.shop+' · 地区：'+report.marketplace+'。每种类别仅显示一次。';
   $('inventory-warnings').replaceChildren(...report.warnings.map(w=>{const p=document.createElement('p');p.textContent=w;return p;}));
@@ -382,11 +384,36 @@ $('delete-selected').addEventListener('click',async()=>{
 });
 
 function updateInventoryShopOptions(){
-  const select=$('inventory-shop'),selected=select.value,market=$('inventory-market').value;
+  ensureInventoryShopPicker();const select=$('inventory-shop'),selected=select.value,market=$('inventory-market').value;select.disabled=false;
   select.replaceChildren(new Option('请选择实际店铺',''));
   for(const shop of inventoryShopNames){const count=templates.filter(t=>(t.shop||'通用模板')===shop&&(!market||t.marketplace===market)&&!t.account_scope_unknown).length;const label=shop==='通用模板'?'通用模板（只查公共库 · '+count+' 份）':shop+' · '+count+' 份'+(market?' '+market:'')+'模板';select.add(new Option(label,shop));}
   select.value=selected;
   const count=templates.filter(t=>(t.shop||'通用模板')===selected&&(!market||t.marketplace===market)&&!t.account_scope_unknown).length;
-  $('inventory-shop-hint').textContent=!selected?'请先选择实际店铺，再识别库存。':selected==='通用模板'?'当前仅检索公共模板库，不会查询其他店铺专用模板。':'当前店铺“'+selected+'”已有 '+count+' 份'+(market?' '+market:'')+'模板；识别后按类别匹配，并允许使用适用的通用模板。';
+  $('inventory-shop-hint').textContent=!inventoryShopNames.some(shop=>shop!=='通用模板')?'当前数据目录没有已登记店铺，请先上传店铺原模板，或在店铺管理中添加；公共模板仍可手动选择。':!selected?'请先选择实际店铺，再识别库存。':selected==='通用模板'?'当前仅检索公共模板库，不会查询其他店铺专用模板。':'当前店铺“'+selected+'”已有 '+count+' 份'+(market?' '+market:'')+'模板；识别后按类别匹配，并允许使用适用的通用模板。';
 }
 $('inventory-shop').addEventListener('change',()=>{const selected=$('inventory-shop').value;updateInventoryShopOptions();$('inventory-shop').value=selected;});
+
+function ensureInventoryShopPicker(){
+  const field=$('inventory-shop');if(!field)return;
+  if(field.tagName!=='SELECT'){
+    const select=document.createElement('select');select.id='inventory-shop';select.required=true;select.setAttribute('aria-label','选择目标店铺');select.add(new Option('请选择实际店铺',''));field.replaceWith(select);
+  }
+  if(!$('inventory-shop-hint')){const hint=document.createElement('p');hint.id='inventory-shop-hint';hint.className='hint';hint.textContent='请选择实际店铺，公共模板不会查询店铺专用文件。';const container=$('inventory-shop').closest('.fields');if(container)container.insertAdjacentElement('afterend',hint);}
+  if(!$('inventory-download-bar')){const bar=document.createElement('div');bar.id='inventory-download-bar';bar.className='inventory-download-bar';bar.hidden=true;const button=document.createElement('button');button.id='download-inventory-templates';button.type='button';button.className='button';button.disabled=true;button.textContent='下载对应表格';const note=document.createElement('span');note.id='inventory-download-note';bar.append(button,note);const flow=document.querySelector('.inventory-flow');if(flow)flow.insertAdjacentElement('afterend',bar);}
+  if(!$('ui-version')&&$('account')){const badge=document.createElement('span');badge.id='ui-version';badge.className='tag ui-version';badge.textContent=UI_REVISION;$('account').insertAdjacentElement('beforebegin',badge);}
+}
+
+function inventoryDownloadIds(){return inventoryReport?[...new Set(categoryResults(inventoryReport).filter(group=>group.template).map(group=>group.template.id))]:[];}
+function updateInventoryDownload(groups){
+  const ids=[...new Set(groups.filter(group=>group.template).map(group=>group.template.id))];$('inventory-download-bar').hidden=false;const button=$('download-inventory-templates');button.disabled=!ids.length;button.textContent=ids.length>1?'↓ 下载对应表格（ZIP · '+ids.length+' 份）':ids.length?'↓ 下载对应表格（Excel）':'暂无可下载表格';
+  $('inventory-download-note').textContent=!ids.length?'尚未匹配到文件，请核对目标店铺、地区及模板库。':groups.some(group=>group.status==='review'&&group.template)?'包含待确认的候选模板，请核对类别后使用。':'已匹配到原始类别模板，点击即可下载。';
+}
+$('download-inventory-templates').addEventListener('click',async()=>{
+  const ids=inventoryDownloadIds();if(!ids.length||busy)return;const button=$('download-inventory-templates');button.disabled=true;
+  try{
+    const response=await fetch('/api/templates/download',{method:'POST',headers:{'Content-Type':'application/json','X-Template-Request':'1'},body:JSON.stringify({ids})});
+    if(!response.ok){const error=await response.json();throw new Error(error.error||'下载失败');}
+    const blob=await response.blob();const header=response.headers.get('Content-Disposition')||'';const match=header.match(/filename\*=UTF-8''([^;]+)/i);const filename=match?decodeURIComponent(match[1]):'对应类别表格.zip';
+    const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('对应类别表格已开始下载');
+  }catch(e){notify(e.message,true);}finally{button.disabled=!inventoryDownloadIds().length;}
+});
