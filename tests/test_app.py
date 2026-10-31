@@ -85,6 +85,20 @@ class SharedLibraryTest(unittest.TestCase):
     def test_wrong_password(self):
         self.assertEqual(self.req('POST', '/api/login', {'username': 'owner', 'password': 'wrong'})[0], 400)
 
+    def test_delete_endpoint_enforces_roles_and_download_disappears(self):
+        from test_inventory import make_book
+        owner,reader,writer=self.login('owner'),self.login('reader'),self.login('writer')
+        data=make_book({'Template':[['sku','title']]})
+        payload={'filename':'delete-test.xlsx','data':base64.b64encode(data).decode(),'shop':'删除测试店','marketplace':'AE','category':'删除测试类目','version':'v1'}
+        status,raw,_=self.req('POST','/api/upload',payload,owner);self.assertEqual(status,200)
+        ident=json.loads(raw)['id']
+        self.assertEqual(self.req('POST','/api/template/delete',{'id':ident})[0],401)
+        self.assertEqual(self.req('POST','/api/template/delete',{'id':ident},reader)[0],403)
+        self.assertEqual(self.req('GET','/api/download/'+ident,cookie=reader)[0],200)
+        self.assertEqual(self.req('POST','/api/templates/delete',{'ids':[ident]},reader)[0],403)
+        self.assertEqual(self.req('POST','/api/template/delete',{'id':ident},writer)[0],200)
+        self.assertEqual(self.req('GET','/api/download/'+ident,cookie=owner)[0],404)
+
     def test_inventory_readonly_analysis(self):
         payload = {'filename': '库存.csv', 'data': base64.b64encode('SKU,品名,类目\n001,不明商品,新类目\n'.encode()).decode()}
         self.assertEqual(self.req('POST', '/api/inventory/inspect', payload)[0], 401)

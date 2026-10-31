@@ -118,6 +118,45 @@ def write_new(path, data):
         f.write(data)
 
 
+def delete_templates(root, identifiers):
+    if not isinstance(identifiers,list) or not 1<=len(identifiers)<=1000 or any(not isinstance(ident,str) or not ident or len(ident)>200 for ident in identifiers) or len(set(identifiers))!=len(identifiers):
+        raise ValueError('请选择 1–1000 条不同的模板记录')
+    root=Path(root);db=connect(root);staged=[];committed=False
+    try:
+        db.execute('BEGIN IMMEDIATE');rows=[]
+        for ident in identifiers:
+            row=db.execute('SELECT * FROM templates WHERE id=?',(ident,)).fetchone()
+            if row is None:raise ValueError('部分模板不存在或已经删除，请刷新列表后重新选择')
+            name=row['file']
+            if Path(name).name!=name or name in ('','.','..'):raise ValueError('模板文件路径无效，未执行删除')
+            rows.append(row)
+        if len({r['file'] for r in rows})!=len(rows):raise ValueError('文件引用存在冲突，未执行删除')
+        for row in rows:
+            original=root/'files'/row['file']
+            if original.exists() or original.is_symlink():
+                pending=root/'.delete-pending';pending.mkdir(exist_ok=True);target=pending/uuid.uuid4().hex
+                original.rename(target);staged.append((original,target))
+        for ident in identifiers:
+            db.execute('DELETE FROM template_metadata WHERE id=?',(ident,));db.execute('DELETE FROM templates WHERE id=?',(ident,))
+        db.commit();committed=True;cleanup_pending=0
+        for _,target in staged:
+            try:target.unlink()
+            except OSError:cleanup_pending+=1
+        return {'deleted':True,'count':len(rows),'ids':identifiers,'filenames':[r['original_name'] for r in rows],'cleanup_pending':cleanup_pending}
+    except Exception:
+        if not committed:
+            db.rollback()
+            for original,target in reversed(staged):
+                if target.exists() or target.is_symlink():target.rename(original)
+        raise
+    finally:db.close()
+
+
+def delete_template(root, ident):
+    result=delete_templates(root,[ident])
+    return {**result,'id':ident,'filename':result['filenames'][0]}
+
+
 def move_shop(root, ident, shop):
     if not isinstance(shop, str) or not shop.strip() or len(shop.strip()) > 120:
         raise ValueError('店铺名称须为 1–120 字')

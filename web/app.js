@@ -1,5 +1,7 @@
 const $ = id => document.getElementById(id);
 let templates = [];
+const selectedTemplates=new Set();
+let visibleTemplates=[];
 let currentRole='viewer';
 let inspectingTemplate=false;
 let busy = false;
@@ -47,27 +49,36 @@ function cell(row,text,cls) {
   const td=document.createElement('td');td.textContent=text;if(cls)td.className=cls;row.append(td);return td;
 }
 function render() {
-  const query=$('search').value.trim().toLowerCase(), market=$('filter-market').value,shop=$('filter-shop').value;
-  const rows=templates.filter(t=>(!market||t.marketplace===market)&&(!shop||(t.shop||'通用模板')===shop)&&[t.original_name,t.category,t.version,t.id,t.shop||'通用模板'].some(v=>v.toLowerCase().includes(query)));
+  const query=$('search').value.trim().toLowerCase(), market=$('filter-market').value,shop=$('filter-shop').value,categoryFilter=$('filter-category').value,versionFilter=$('filter-version').value;
+  const rows=templates.filter(t=>(!market||t.marketplace===market)&&(!shop||(t.shop||'通用模板')===shop)&&(!categoryFilter||t.category===categoryFilter)&&(!versionFilter||t.version===versionFilter)&&[t.original_name,t.category,t.version,t.id,t.shop||'通用模板'].some(v=>v.toLowerCase().includes(query)));
+  $('filter-result-summary').textContent='找到 '+rows.length+' 条模板 / 全部 '+templates.length+' 条';visibleTemplates=rows;$('template-bulk-actions').hidden=currentRole==='viewer';document.querySelector('.template-select-column').hidden=currentRole==='viewer';
   $('rows').replaceChildren();$('count').textContent=rows.length;$('empty').hidden=rows.length>0;
   $('empty').querySelector('h3').textContent=templates.length?'没有找到匹配的模板':'模板库还空着';
-  $('empty').querySelector('p').textContent=templates.length?'试试其他关键词或站点。':'导入第一份原始模板，以后无需反复查找。';
+  $('empty').querySelector('p').textContent=templates.length?'调整关键词、店铺、地区、类别或版本后重试。':'导入第一份原始模板，以后无需反复查找。';
   for(const t of rows) {
-    const tr=document.createElement('tr'),name=cell(tr,'');
+    const tr=document.createElement('tr');if(currentRole!=='viewer'){const td=cell(tr,'');td.className='template-select-cell';const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=selectedTemplates.has(t.id);checkbox.setAttribute('aria-label','选择模板 '+t.original_name);checkbox.addEventListener('change',()=>{if(checkbox.checked)selectedTemplates.add(t.id);else selectedTemplates.delete(t.id);updateTemplateSelection();});td.append(checkbox);}const name=cell(tr,'');
     const title=document.createElement('div');title.className='filename';title.textContent=t.original_name;title.title=t.original_name;
     const hash=document.createElement('small');hash.className='hash';hash.textContent='SHA-256 '+t.sha256.slice(0,14)+'…';hash.title=t.sha256;
     name.append(title,hash);
     const meta=cell(tr,'');const store=document.createElement('small');store.className='hash';store.textContent=(t.shop||'通用模板')+(t.metadata?.account_hint?' · 账户 '+t.metadata.account_hint:'')+(t.account_scope_unknown?' · 需绑定店铺':'');meta.append(store);const badge=document.createElement('span');badge.className='badge';badge.textContent=t.marketplace;meta.append(badge,document.createTextNode(t.category));
     cell(tr,t.version);cell(tr,new Date(t.created_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}));
-    const action=cell(tr,'');const link=document.createElement('a');link.href='/api/download/'+encodeURIComponent(t.id);link.textContent='↓ 下载原件';action.append(link);if(currentRole!=='viewer'){const move=document.createElement('button');move.className='text-button';move.textContent='设置店铺';move.addEventListener('click',async()=>{const shop=prompt('输入归属店铺；含账户标识的同来源模板会一起调整。无账户来源的模板才可设为“通用模板”',t.shop||'通用模板');if(shop===null)return;try{await postJSON('/api/template-shop',{id:t.id,shop});inventoryAICache={};resetInventory(false);await load();notify('已更新店铺归属');}catch(e){notify(e.message,true);}});action.append(move);}$('rows').append(tr);
+    const action=cell(tr,'');const link=document.createElement('a');link.href='/api/download/'+encodeURIComponent(t.id);link.textContent='↓ 下载原件';action.append(link);if(currentRole!=='viewer'){const move=document.createElement('button');move.className='text-button';move.textContent='设置店铺';move.addEventListener('click',async()=>{const shop=prompt('输入归属店铺；含账户标识的同来源模板会一起调整。无账户来源的模板才可设为“通用模板”',t.shop||'通用模板');if(shop===null)return;try{await postJSON('/api/template-shop',{id:t.id,shop});inventoryAICache={};resetInventory(false);await load();notify('已更新店铺归属');}catch(e){notify(e.message,true);}});action.append(move);const remove=document.createElement('button');remove.className='text-button delete-template';remove.textContent='删除';remove.setAttribute('aria-label','删除模板 '+t.original_name);remove.addEventListener('click',async()=>{
+      if(busy){notify('请等待当前操作完成',true);return;}
+      if(!confirm('确认删除以下模板？\n\n文件：'+t.original_name+'\n店铺：'+(t.shop||'通用模板')+'\n站点 / 类目：'+t.marketplace+' / '+t.category+'\n版本：'+t.version+'\n\n确认后移除该文件和库内记录。已有备份可用于恢复。'))return;
+      busy=true;remove.disabled=true;
+      try{const result=await postJSON('/api/template/delete',{id:t.id});inventoryAICache={};resetInventory(false);await load();notify(result.cleanup_pending?'已从模板库移除；磁盘文件清理尚未完成':'模板已删除');}
+      catch(e){notify(e.message,true);}finally{busy=false;remove.disabled=false;}
+    });action.append(remove);}$('rows').append(tr);
   }
+  updateTemplateSelection();
 }
 async function load() {
+  selectedTemplates.clear();
   const [stored,registeredShops]=await Promise.all([request('/api/templates'),request('/api/shops')]);templates=stored;
   $('total').textContent=templates.length;$('markets').textContent=new Set(templates.map(t=>t.marketplace)).size;$('categories').textContent=new Set(templates.map(t=>t.category)).size;
   const selected=$('filter-market').value;$('filter-market').replaceChildren(new Option('全部站点',''));
   [...new Set(templates.map(t=>t.marketplace))].sort().forEach(m=>$('filter-market').add(new Option(m,m)));
-  $('filter-market').value=selected;const selectedShop=$('filter-shop').value;const shops=[...new Set(['通用模板',...registeredShops,...templates.map(t=>t.shop||'通用模板')])].sort();$('filter-shop').replaceChildren(new Option('全部店铺',''),...shops.map(shop=>new Option(shop,shop)));$('filter-shop').value=selectedShop;$('shop-options').replaceChildren(...shops.map(shop=>new Option(shop,shop)));render();
+  $('filter-market').value=selected;const selectedShop=$('filter-shop').value;const shops=[...new Set(['通用模板',...registeredShops,...templates.map(t=>t.shop||'通用模板')])].sort();$('filter-shop').replaceChildren(new Option('全部店铺',''),...shops.map(shop=>new Option(shop,shop)));$('filter-shop').value=selectedShop;$('shop-options').replaceChildren(...shops.map(shop=>new Option(shop,shop)));for(const [id,field,label] of [['filter-category','category','全部类别'],['filter-version','version','全部版本']]){const value=$(id).value;$(id).replaceChildren(new Option(label,''),...[...new Set(templates.map(t=>t[field]))].sort().map(item=>new Option(item,item)));$(id).value=value;}render();
 }
 async function encoded(file) {
   if(file.size>32*1024*1024)throw new Error('文件不能超过 32 MB');
@@ -93,7 +104,7 @@ $('restore').addEventListener('change',async event=>{
   busy=true;
   try{const result=await sendFile('/api/restore',file);await load();notify('恢复成功，共 '+result.count+' 份模板。');}catch(e){notify(e.message,true);}finally{busy=false;event.target.value='';}
 });
-$('search').addEventListener('input',render);$('filter-market').addEventListener('change',render);$('filter-shop').addEventListener('change',render);
+const filterTemplates=()=>{selectedTemplates.clear();render();};$('search').addEventListener('input',filterTemplates);$('filter-market').addEventListener('change',filterTemplates);$('filter-shop').addEventListener('change',filterTemplates);$('filter-category').addEventListener('change',filterTemplates);$('filter-version').addEventListener('change',filterTemplates);$('clear-template-filters').addEventListener('click',()=>{for(const id of ['search','filter-market','filter-shop','filter-category','filter-version'])$(id).value='';filterTemplates();});
 $('refresh').addEventListener('click',()=>load().catch(e=>notify(e.message,true)));
 async function enter() {
   const me=await request('/api/me');currentRole=me.role;
@@ -353,3 +364,17 @@ $('shop-roster-form').addEventListener('submit',async e=>{
 
 function setInventoryStep(step){for(const item of document.querySelectorAll('.inventory-flow li')){const value=Number(item.dataset.step);item.classList.toggle('current',value===step);item.classList.toggle('complete',value<step);if(value===step)item.setAttribute('aria-current','step');else item.removeAttribute('aria-current');}}
 $('inventory-use-ai').addEventListener('change',()=>{$('ai-advanced').open=$('inventory-use-ai').checked;});
+
+function updateTemplateSelection(){
+  const count=selectedTemplates.size;$('template-selection-count').textContent=count?'已选择 '+count+' 条模板':'未选择模板';$('delete-selected').disabled=!count||busy;$('delete-selected').textContent='删除所选'+(count?'（'+count+'）':'');
+  const box=$('select-all-templates');box.checked=visibleTemplates.length>0&&visibleTemplates.every(t=>selectedTemplates.has(t.id));box.indeterminate=!box.checked&&visibleTemplates.some(t=>selectedTemplates.has(t.id));box.disabled=!visibleTemplates.length||currentRole==='viewer';
+}
+$('select-all-templates').addEventListener('change',()=>{for(const template of visibleTemplates){if($('select-all-templates').checked)selectedTemplates.add(template.id);else selectedTemplates.delete(template.id);}render();});
+$('clear-template-selection').addEventListener('click',()=>{selectedTemplates.clear();render();});
+$('delete-selected').addEventListener('click',async()=>{
+  if(busy||!selectedTemplates.size)return;
+  const selected=templates.filter(t=>selectedTemplates.has(t.id));
+  if(!confirm('确认删除所选 '+selected.length+' 条模板？\n\n'+selected.slice(0,8).map(t=>t.original_name+' · '+t.shop+' · '+t.marketplace+' · '+t.version).join('\n')+(selected.length>8?'\n……另有 '+(selected.length-8)+' 条':'')+'\n\n确认后移除对应文件和库内记录。已有备份可用于恢复。'))return;
+  busy=true;updateTemplateSelection();
+  try{const result=await postJSON('/api/templates/delete',{ids:selected.map(t=>t.id)});inventoryAICache={};resetInventory(false);await load();notify('已删除 '+result.count+' 条模板'+(result.cleanup_pending?'；部分磁盘文件清理待完成':''));}catch(e){notify(e.message,true);}finally{busy=false;updateTemplateSelection();}
+});

@@ -183,6 +183,14 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     self.send(library.move_shop(self.root, body.get('id'), body.get('shop')))
                 return
+            if self.path == '/api/template/delete':
+                with LOCK:
+                    self.send(library.delete_template(self.root,body.get('id')))
+                return
+            if self.path == '/api/templates/delete':
+                with LOCK:
+                    self.send(library.delete_templates(self.root,body.get('ids')))
+                return
             if self.path == '/api/shops/import':
                 with LOCK:
                     self.send(roster.import_rows(self.root,body['rows']) if 'rows' in body else roster.import_text(self.root, body.get('text')))
