@@ -20,6 +20,7 @@ from template_manager.auth import Auth
 from template_manager import inventory
 from template_manager import ai
 from template_manager import roster
+from template_manager import batch
 
 WEB = Path(__file__).parent / 'web'
 LOCK = threading.Lock()
@@ -35,7 +36,7 @@ class Handler(BaseHTTPRequestHandler):
         # Do not log uploaded filenames or metadata.
         pass
 
-    def send(self, data, status=200, mime='application/json; charset=utf-8', filename=None, cookie=None):
+    def send(self, data, status=200, mime='application/json; charset=utf-8', filename=None, cookie=None, extra_headers=None):
         if isinstance(data, (dict, list)):
             data = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
@@ -45,6 +46,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         if cookie:
             self.send_header('Set-Cookie', cookie)
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, str(value))
         self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'")
         if filename:
             self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + quote(filename, safe=''))
@@ -104,6 +107,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(self.server.ai.public())
                 elif path.path == '/api/shops':
                     self.send(roster.directory(self.root))
+                elif path.path == '/api/shops/targets':
+                    self.send(roster.targets(self.root, parse_qs(path.query).get('marketplace', [''])[0]))
                 elif path.path == '/api/backup':
                     with tempfile.TemporaryDirectory() as d:
                         dest = Path(d) / 'backup.zip'
@@ -191,6 +196,11 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/template/inspect':
                 with LOCK:
                     self.send(library.inspect_template(self.root, data, Path(name).suffix))
+                return
+            if self.path == '/api/template/batch':
+                with LOCK:
+                    archive, report = batch.generate(self.root, data, name, body.get('shops'), body.get('category'), body.get('version'), body.get('save_to_library') is not False)
+                self.send(archive, mime='application/zip', filename='同地区多店铺模板-'+report['marketplace']+'.zip', extra_headers={'X-Generated-Count': report['generated'], 'X-Saved-Count': report['saved'], 'X-Reused-Count': report['reused'], 'X-Failed-Count':report['failed']})
                 return
             if self.path == '/api/inventory/analyze':
                 with LOCK:

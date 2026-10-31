@@ -59,7 +59,8 @@ class RosterTests(unittest.TestCase):
         self.assertEqual(roster.directory(restored), roster.directory(self.root))
         self.assertEqual(library.inspect_template(restored, account_book(account='ATEST003'), '.xlsm')['recognized_shop'], '测试乙')
         db = (restored/'index.sqlite3').read_bytes()
-        self.assertNotIn(b'ATEST003', db)
+        self.assertIn(b'ATEST003', db)  # Private raw IDs are required to generate other shops' copies.
+        self.assertTrue(all(t['can_generate'] for t in roster.targets(restored,'AE')))
 
 
 if __name__ == '__main__':

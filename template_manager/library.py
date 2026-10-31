@@ -57,6 +57,8 @@ def connect(root):
     db.execute('CREATE TABLE IF NOT EXISTS template_metadata (id TEXT PRIMARY KEY, info TEXT NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS shop_bindings (fingerprint TEXT PRIMARY KEY, shop TEXT NOT NULL, account_hint TEXT)')
     db.execute('CREATE TABLE IF NOT EXISTS shop_registry (shop TEXT NOT NULL, marketplace TEXT NOT NULL, fingerprint TEXT NOT NULL, account_hint TEXT, PRIMARY KEY(shop,marketplace))')
+    if 'seller_id' not in {r[1] for r in db.execute('PRAGMA table_info(shop_registry)')}:
+        db.execute("ALTER TABLE shop_registry ADD COLUMN seller_id TEXT NOT NULL DEFAULT ''")
     return db
 
 
@@ -169,7 +171,7 @@ def run(a):
                 if len(z.infolist()) > 10000 or sum(i.file_size for i in z.infolist()) > 512 * 1024 * 1024:
                     raise ValueError('备份解压体积过大')
                 manifest = json.loads(z.read('manifest.json'))
-                if manifest.get('schema_version') not in (1, 2, 3, 4):
+                if manifest.get('schema_version') not in (1, 2, 3, 4, 5):
                     raise ValueError('不支持的备份版本')
                 db = connect(stage)
                 try:
@@ -267,7 +269,7 @@ def run(a):
                 raise ValueError('备份输出已存在')
             try:
                 with f, zipfile.ZipFile(f, 'w', zipfile.ZIP_DEFLATED) as z:
-                    z.writestr('manifest.json', json.dumps({'schema_version': 4, 'templates': rows, 'shop_registry': [dict(r) for r in db.execute('SELECT * FROM shop_registry')], 'shop_bindings': [dict(r) for r in db.execute('SELECT * FROM shop_bindings')]}, ensure_ascii=False))
+                    z.writestr('manifest.json', json.dumps({'schema_version': 5, 'templates': rows, 'shop_registry': [dict(r) for r in db.execute('SELECT * FROM shop_registry')], 'shop_bindings': [dict(r) for r in db.execute('SELECT * FROM shop_bindings')]}, ensure_ascii=False))
                     for row in rows:
                         z.writestr('files/' + row['file'], verified(root, row))
             except Exception:

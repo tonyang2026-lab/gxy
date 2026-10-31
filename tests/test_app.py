@@ -113,6 +113,22 @@ class SharedLibraryTest(unittest.TestCase):
         self.assertIn('测试甲', json.loads(raw))
         self.assertNotIn(b'ATEST001', raw)
 
+    def test_batch_same_region_download_and_permissions(self):
+        from test_roster import TABLE
+        from test_metadata import account_book
+        owner, reader = self.login('owner'), self.login('reader')
+        self.assertEqual(self.req('POST','/api/shops/import',{'text':TABLE},owner)[0],200)
+        source = account_book(account='ATEST001')
+        payload = {'filename':'source.xlsm','data':base64.b64encode(source).decode(),'shops':['测试甲','测试乙'],'category':'行李箱','version':'api-batch','save_to_library':False}
+        self.assertEqual(self.req('POST','/api/template/batch',payload,reader)[0],403)
+        status,raw,_ = self.req('POST','/api/template/batch',payload,owner)
+        self.assertEqual(status,200)
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            report=json.loads(z.read('生成与入库报告.json'))
+            self.assertEqual(report['generated'],2)
+            self.assertEqual(report['marketplace'],'AE')
+            self.assertEqual(report['saved'],0)
+
     def test_ai_config_permissions_consent_and_result(self):
         owner, reader = self.login('owner'), self.login('reader')
         config = {'provider': 'qwen', 'model': 'qwen-vl-plus', 'api_key': 'unit-test-not-a-real-key'}
