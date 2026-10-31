@@ -19,6 +19,7 @@ from template_manager import library
 from template_manager.auth import Auth
 from template_manager import inventory
 from template_manager import ai
+from template_manager import roster
 
 WEB = Path(__file__).parent / 'web'
 LOCK = threading.Lock()
@@ -101,6 +102,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(self.call('list', marketplace=q.get('marketplace', [None])[0], category=q.get('category', [None])[0], shop=q.get('shop', [None])[0]))
                 elif path.path == '/api/ai/settings':
                     self.send(self.server.ai.public())
+                elif path.path == '/api/shops':
+                    self.send(roster.directory(self.root))
                 elif path.path == '/api/backup':
                     with tempfile.TemporaryDirectory() as d:
                         dest = Path(d) / 'backup.zip'
@@ -148,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
                 suffix = '; Secure' if self.server.scheme == 'https' else ''
                 self.send({'ok': True}, cookie=f'session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + suffix)
                 return
-            roles = ('admin',) if self.path in ('/api/users', '/api/restore', '/api/ai/settings') else ('admin', 'editor')
+            roles = ('admin',) if self.path in ('/api/users', '/api/restore', '/api/ai/settings', '/api/shops/import') else ('admin', 'editor')
             if self.path in ('/api/logout', '/api/inventory/inspect', '/api/inventory/analyze'):
                 roles = None
             if not self.identity(roles):
@@ -171,6 +174,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/template-shop':
                 with LOCK:
                     self.send(library.move_shop(self.root, body.get('id'), body.get('shop')))
+                return
+            if self.path == '/api/shops/import':
+                with LOCK:
+                    self.send(roster.import_text(self.root, body.get('text')))
                 return
             data = base64.b64decode(body['data'], validate=True)
             if len(data) > 32 * 1024 * 1024:

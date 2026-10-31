@@ -9,3 +9,5 @@
 .ai-options{background:#f2f6ed;border:1px solid #dce6d2;border-radius:8px;margin-top:20px;padding:15px 18px}.ai-options>label{display:block;margin:10px 0;line-height:1.8}.ai-options input[type=checkbox]{display:inline-block;width:auto;vertical-align:middle;margin:0 7px 0 0}.ai-options input[type=number]{display:inline-block;width:85px;margin:0 0 0 10px;padding:5px}.ai-options .hint{margin-top:12px}.ai-options span{font-size:11px;color:#7d8b72}
 
 #import .fields{grid-template-columns:1.2fr .8fr 1.4fr 1fr auto}#inventory .fields:first-child{grid-template-columns:1.7fr 1fr .8fr auto}.filters{flex-wrap:wrap}.filters input{flex-basis:240px}@media(max-width:1000px){#import .fields,#inventory .fields:first-child{grid-template-columns:1fr 1fr}}@media(max-width:650px){#import .fields,#inventory .fields:first-child{grid-template-columns:1fr}.filters select{flex:1}}
+
+textarea{display:block;width:100%;margin:10px 0 15px;padding:12px;border:1px solid #dce4de;border-radius:6px;background:#fbfcfa;color:#35483c;font:12px/1.8 ui-monospace,Consolas,monospace;resize:vertical;tab-size:18;white-space:pre}textarea:focus{outline:2px solid #c5d8b8}

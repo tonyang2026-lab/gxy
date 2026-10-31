@@ -101,6 +101,18 @@ class SharedLibraryTest(unittest.TestCase):
         for path in ('/', '/style.css', '/app.js'):
             self.assertEqual(self.req('GET', path)[0], 200)
 
+    def test_roster_import_admin_only(self):
+        from test_roster import TABLE
+        reader, owner = self.login('reader'), self.login('owner')
+        self.assertEqual(self.req('POST', '/api/shops/import', {'text': TABLE}, reader)[0], 403)
+        status, raw, _ = self.req('POST', '/api/shops/import', {'text': TABLE}, owner)
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)['shops'], 2)
+        status, raw, _ = self.req('GET', '/api/shops', cookie=reader)
+        self.assertEqual(status, 200)
+        self.assertIn('测试甲', json.loads(raw))
+        self.assertNotIn(b'ATEST001', raw)
+
     def test_ai_config_permissions_consent_and_result(self):
         owner, reader = self.login('owner'), self.login('reader')
         config = {'provider': 'qwen', 'model': 'qwen-vl-plus', 'api_key': 'unit-test-not-a-real-key'}

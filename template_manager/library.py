@@ -56,6 +56,7 @@ def connect(root):
             db.rollback(); db.close(); raise
     db.execute('CREATE TABLE IF NOT EXISTS template_metadata (id TEXT PRIMARY KEY, info TEXT NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS shop_bindings (fingerprint TEXT PRIMARY KEY, shop TEXT NOT NULL, account_hint TEXT)')
+    db.execute('CREATE TABLE IF NOT EXISTS shop_registry (shop TEXT NOT NULL, marketplace TEXT NOT NULL, fingerprint TEXT NOT NULL, account_hint TEXT, PRIMARY KEY(shop,marketplace))')
     return db
 
 
@@ -65,6 +66,9 @@ def account_check(db, info, shop):
         return
     if shop == GLOBAL_SHOP:
         raise ValueError('此模板含账户来源标识，请指定具体店铺，不能作为跨店铺通用模板')
+    expected = db.execute('SELECT fingerprint FROM shop_registry WHERE shop=? AND marketplace=?', (shop, info.get('marketplace', ''))).fetchone()
+    if expected and expected['fingerprint'] != fingerprint:
+        raise ValueError('模板账户来源与店铺对照表中该站点的卖家记号不一致，请核对归属')
     bound = db.execute('SELECT shop FROM shop_bindings WHERE fingerprint=?', (fingerprint,)).fetchone()
     if bound and bound['shop'] != shop:
         raise ValueError(f"账户来源 {info.get('account_hint')} 已绑定店铺“{bound['shop']}”，不能存入“{shop}”；请核对归属")
@@ -140,6 +144,10 @@ def move_shop(root, ident, shop):
             raise ValueError('目标店铺已有同站点、类目和版本，未覆盖任何模板') from None
         if fingerprint:
             db.execute('INSERT OR REPLACE INTO shop_bindings VALUES (?,?,?)', (fingerprint, shop.strip(), info.get('account_hint', '')))
+            try:
+                db.execute('UPDATE shop_registry SET shop=? WHERE fingerprint=?', (shop.strip(), fingerprint))
+            except sqlite3.IntegrityError:
+                raise ValueError('目标店铺对照表已有不同来源，未修改任何归属') from None
         row = dict(db.execute('SELECT * FROM templates WHERE id=?', (ident,)).fetchone())
         row['moved_count'] = len(ids)
         db.commit()
@@ -161,10 +169,12 @@ def run(a):
                 if len(z.infolist()) > 10000 or sum(i.file_size for i in z.infolist()) > 512 * 1024 * 1024:
                     raise ValueError('备份解压体积过大')
                 manifest = json.loads(z.read('manifest.json'))
-                if manifest.get('schema_version') not in (1, 2, 3):
+                if manifest.get('schema_version') not in (1, 2, 3, 4):
                     raise ValueError('不支持的备份版本')
                 db = connect(stage)
                 try:
+                    from .roster import apply
+                    apply(db, manifest.get('shop_registry', []), manifest.get('shop_bindings', []))
                     for row in manifest['templates']:
                         row = dict(row)
                         row.setdefault('shop', GLOBAL_SHOP)
@@ -257,7 +267,7 @@ def run(a):
                 raise ValueError('备份输出已存在')
             try:
                 with f, zipfile.ZipFile(f, 'w', zipfile.ZIP_DEFLATED) as z:
-                    z.writestr('manifest.json', json.dumps({'schema_version': 3, 'templates': rows}, ensure_ascii=False))
+                    z.writestr('manifest.json', json.dumps({'schema_version': 4, 'templates': rows, 'shop_registry': [dict(r) for r in db.execute('SELECT * FROM shop_registry')], 'shop_bindings': [dict(r) for r in db.execute('SELECT * FROM shop_bindings')]}, ensure_ascii=False))
                     for row in rows:
                         z.writestr('files/' + row['file'], verified(root, row))
             except Exception:

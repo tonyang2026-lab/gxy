@@ -35,11 +35,11 @@ function render() {
   }
 }
 async function load() {
-  templates=await request('/api/templates');
+  const [stored,registeredShops]=await Promise.all([request('/api/templates'),request('/api/shops')]);templates=stored;
   $('total').textContent=templates.length;$('markets').textContent=new Set(templates.map(t=>t.marketplace)).size;$('categories').textContent=new Set(templates.map(t=>t.category)).size;
   const selected=$('filter-market').value;$('filter-market').replaceChildren(new Option('全部站点',''));
   [...new Set(templates.map(t=>t.marketplace))].sort().forEach(m=>$('filter-market').add(new Option(m,m)));
-  $('filter-market').value=selected;const selectedShop=$('filter-shop').value;const shops=[...new Set(['通用模板',...templates.map(t=>t.shop||'通用模板')])].sort();$('filter-shop').replaceChildren(new Option('全部店铺',''),...shops.map(shop=>new Option(shop,shop)));$('filter-shop').value=selectedShop;$('shop-options').replaceChildren(...shops.map(shop=>new Option(shop,shop)));render();
+  $('filter-market').value=selected;const selectedShop=$('filter-shop').value;const shops=[...new Set(['通用模板',...registeredShops,...templates.map(t=>t.shop||'通用模板')])].sort();$('filter-shop').replaceChildren(new Option('全部店铺',''),...shops.map(shop=>new Option(shop,shop)));$('filter-shop').value=selectedShop;$('shop-options').replaceChildren(...shops.map(shop=>new Option(shop,shop)));render();
 }
 async function encoded(file) {
   if(file.size>32*1024*1024)throw new Error('文件不能超过 32 MB');
@@ -72,7 +72,7 @@ async function enter() {
   resetInventory();$('inventory-file').value='';
   $('account').textContent=me.username+' · '+({admin:'管理员',editor:'编辑者',viewer:'只读'}[me.role]);
   $('login-screen').hidden=true;$('workspace').hidden=false;
-  $('import').hidden=me.role==='viewer';$('ai-settings-panel').hidden=me.role!=='admin';await loadAISettings();$('admin-panel').hidden=me.role!=='admin';
+  $('import').hidden=me.role==='viewer';$('ai-settings-panel').hidden=me.role!=='admin';$('shop-roster-panel').hidden=me.role!=='admin';await loadAISettings();$('admin-panel').hidden=me.role!=='admin';
   document.querySelector('.restore-label').hidden=me.role!=='admin';
   await load();
 }
@@ -243,3 +243,13 @@ $('file').addEventListener('change',async()=>{
   }catch(e){if($('file').files[0]===file)$('template-source-info').textContent='来源读取失败：'+e.message+'；请勿猜测店铺归属';}
   finally{if($('file').files[0]===file)inspectingTemplate=false;}
 });
+
+$('shop-roster-form').addEventListener('submit',async e=>{
+  e.preventDefault();if(busy){notify('请等待当前操作完成',true);return;}const b=e.submitter;b.disabled=true;
+  try{
+    const result=await postJSON('/api/shops/import',{text:$('shop-roster-text').value});
+    $('shop-roster-text').value='';$('shop-roster-status').textContent='已导入 '+result.shops+' 家店铺、'+result.site_records+' 条站点记录，对应 '+result.account_sources+' 个不同账户来源。只保存摘要和尾号提示，不保存原始卖家记号。';
+    inventoryAICache={};resetInventory(false);await load();notify('店铺对照表已导入，下次选择模板将提示归属');
+  }catch(err){notify(err.message,true);}finally{b.disabled=false;}
+});
+$('logout').addEventListener('click',()=>{$('shop-roster-text').value='';$('shop-roster-status').textContent='';});
