@@ -19,7 +19,7 @@ def parse_xml(raw):
     return ET.fromstring(raw)
 
 
-def inspect(data):
+def inspect(data, include_seller=False):
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         if 'xl/_rels/workbook.xml.rels' not in z.namelist():
             return {}
@@ -53,6 +53,8 @@ def inspect(data):
         contributor = raw.get('contributorId', '')
         valid = bool(re.fullmatch(r'amzn1\.cr\.o\.[A-Za-z0-9_-]{1,100}', contributor))
         result = {'account_fingerprint': hashlib.sha256(('amazon-contributor:'+contributor).encode()).hexdigest() if valid else '', 'account_hint': '…'+contributor[-5:] if valid else '', 'marketplace': MARKETS.get(raw.get('primaryMarketplaceId', '').split('.')[-1], ''), 'generated_at': raw.get('timestamp', ''), 'product_types': [], 'data_row': None, 'attribute_row': None, 'field_count': 0, 'has_prefilled_data': False}
+        if include_seller and valid:
+            result['seller_id']=contributor[len('amzn1.cr.o.'):]
         try:
             types = base64.b64decode(raw.get('ptds', ''), validate=True).decode()
             parsed = json.loads(types) if types.startswith('[') else [types]

@@ -107,6 +107,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(self.server.ai.public())
                 elif path.path == '/api/shops':
                     self.send(roster.directory(self.root))
+                elif path.path == '/api/shops/roster':
+                    if self.identity(('admin',)):
+                        self.send(roster.editable_directory(self.root))
                 elif path.path == '/api/shops/targets':
                     self.send(roster.targets(self.root, parse_qs(path.query).get('marketplace', [''])[0]))
                 elif path.path == '/api/backup':
@@ -156,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
                 suffix = '; Secure' if self.server.scheme == 'https' else ''
                 self.send({'ok': True}, cookie=f'session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + suffix)
                 return
-            roles = ('admin',) if self.path in ('/api/users', '/api/restore', '/api/ai/settings', '/api/shops/import') else ('admin', 'editor')
+            roles = ('admin',) if self.path in ('/api/users', '/api/restore', '/api/ai/settings', '/api/shops/import', '/api/shops/preview') else ('admin', 'editor')
             if self.path in ('/api/logout', '/api/inventory/inspect', '/api/inventory/analyze'):
                 roles = None
             if not self.identity(roles):
@@ -182,7 +185,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == '/api/shops/import':
                 with LOCK:
-                    self.send(roster.import_text(self.root, body.get('text')))
+                    self.send(roster.import_rows(self.root,body['rows']) if 'rows' in body else roster.import_text(self.root, body.get('text')))
+                return
+            if self.path == '/api/shops/preview':
+                groups={}
+                for record in roster.parse(body.get('text')):
+                    row=groups.setdefault(record['shop'],{'shop':record['shop'],'ae':'','sa':''})
+                    row[record['marketplace'].lower()]=record['seller_id']
+                self.send(list(groups.values()))
                 return
             data = base64.b64decode(body['data'], validate=True)
             if len(data) > 32 * 1024 * 1024:

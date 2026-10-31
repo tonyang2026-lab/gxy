@@ -72,7 +72,7 @@ async function enter() {
   resetInventory();$('inventory-file').value='';
   $('account').textContent=me.username+' · '+({admin:'管理员',editor:'编辑者',viewer:'只读'}[me.role]);
   $('login-screen').hidden=true;$('workspace').hidden=false;
-  $('import').hidden=me.role==='viewer';$('batch-panel').hidden=me.role==='viewer';$('ai-settings-panel').hidden=me.role!=='admin';$('shop-roster-panel').hidden=me.role!=='admin';await loadAISettings();$('admin-panel').hidden=me.role!=='admin';
+  $('import').hidden=me.role==='viewer';$('batch-panel').hidden=me.role==='viewer';$('ai-settings-panel').hidden=me.role!=='admin';$('shop-roster-panel').hidden=me.role!=='admin';await loadAISettings();if(me.role==='admin')await loadShopEditor();$('admin-panel').hidden=me.role!=='admin';
   document.querySelector('.restore-label').hidden=me.role!=='admin';
   await load();
 }
@@ -244,14 +244,6 @@ $('file').addEventListener('change',async()=>{
   finally{if($('file').files[0]===file)inspectingTemplate=false;}
 });
 
-$('shop-roster-form').addEventListener('submit',async e=>{
-  e.preventDefault();if(busy){notify('请等待当前操作完成',true);return;}const b=e.submitter;b.disabled=true;
-  try{
-    const result=await postJSON('/api/shops/import',{text:$('shop-roster-text').value});
-    $('shop-roster-text').value='';$('shop-roster-status').textContent='已导入 '+result.shops+' 家店铺、'+result.site_records+' 条站点记录，对应 '+result.account_sources+' 个不同账户来源。完整卖家记号仅保存在服务器私有数据库，用于批量生成，不写入公开软件包。';
-    inventoryAICache={};resetInventory(false);await load();notify('店铺对照表已导入，下次选择模板将提示归属');
-  }catch(err){notify(err.message,true);}finally{b.disabled=false;}
-});
 $('logout').addEventListener('click',()=>{$('shop-roster-text').value='';$('shop-roster-status').textContent='';});
 
 let batchFile=null,batchSource=null,batchReading=false;
@@ -291,3 +283,28 @@ $('batch-form').addEventListener('submit',async e=>{
   }catch(err){notify(err.message,true);}finally{busy=false;controls.forEach((c,i)=>c.disabled=states[i]);b.textContent=old;}
 });
 $('logout').addEventListener('click',()=>{$('batch-file').value='';batchFile=null;batchSource=null;$('batch-targets').replaceChildren();$('batch-status').textContent='';});
+
+function drawShopEditor(rows){
+  $('shop-grid-body').replaceChildren();
+  for(const row of rows.length?rows:[{shop:'',ae:'',sa:''}])addShopRow(row);
+}
+function addShopRow(value={shop:'',ae:'',sa:''}){
+  const tr=document.createElement('tr');
+  for(const key of ['shop','ae','sa']){const td=document.createElement('td');const input=document.createElement('input');input.value=value[key]||'';input.dataset.field=key;input.maxLength=key==='shop'?120:31;input.placeholder=key==='shop'?'店铺名称':'没有此地区可留空';input.setAttribute('aria-label',key==='shop'?'店铺名称':key==='ae'?'阿联酋卖家记号':'沙特卖家记号');td.append(input);tr.append(td);}
+  const td=document.createElement('td');const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent='移除此行';button.title='仅移出当前待保存表格，不删除已登记店铺';button.onclick=()=>tr.remove();td.append(button);tr.append(td);$('shop-grid-body').append(tr);
+}
+async function loadShopEditor(){drawShopEditor(await request('/api/shops/roster'));}
+$('shop-add-row').addEventListener('click',()=>addShopRow());
+$('shop-toggle-paste').addEventListener('click',()=>{$('shop-paste-area').hidden=!$('shop-paste-area').hidden;if(!$('shop-paste-area').hidden)$('shop-roster-text').focus();});
+$('shop-preview').addEventListener('click',async()=>{
+  const button=$('shop-preview');button.disabled=true;
+  try{const rows=await postJSON('/api/shops/preview',{text:$('shop-roster-text').value});drawShopEditor(rows);$('shop-roster-text').value='';$('shop-paste-area').hidden=true;$('shop-roster-status').textContent='已识别 '+rows.length+' 家店铺，请核对后点击保存。';}catch(e){$('shop-roster-status').textContent=e.message;notify(e.message,true);}finally{button.disabled=false;}
+});
+$('shop-roster-form').addEventListener('submit',async e=>{
+  e.preventDefault();if(busy)return;const b=e.submitter;b.disabled=true;
+  try{
+    const rows=[...$('shop-grid-body').rows].map(tr=>Object.fromEntries([...tr.querySelectorAll('input')].map(input=>[input.dataset.field,input.value])));
+    const result=await postJSON('/api/shops/import',{rows});$('shop-roster-status').textContent='已保存 '+result.shops+' 家店铺、'+result.site_records+' 条地区记录。以后无需重复填写。';
+    inventoryAICache={};resetInventory(false);await load();await loadShopEditor();notify('店铺已保存');
+  }catch(e){$('shop-roster-status').textContent=e.message;notify(e.message,true);}finally{b.disabled=false;}
+});

@@ -206,7 +206,8 @@ def run(a):
             source = Path(a.source)
             data = source.read_bytes()
             workbook(data, source.suffix)
-            info = metadata.inspect(data)
+            info = metadata.inspect(data, include_seller=True)
+            source_seller=info.pop('seller_id','')
             market = a.marketplace.strip().upper()
             category, version = a.category.strip(), a.version.strip()
             shop = getattr(a, 'shop', GLOBAL_SHOP).strip()
@@ -218,6 +219,9 @@ def run(a):
             if info.get('marketplace') and info['marketplace'] != market:
                 raise ValueError('模板内部主站点为 '+info['marketplace']+'，与所选站点不同')
             account_check(db, info, shop)
+            if info.get('marketplace') in ('AE','SA') and source_seller.startswith('A') and source_seller.isalnum():
+                from .roster import apply
+                apply(db,[{'shop':shop,'marketplace':market,'fingerprint':info['account_fingerprint'],'account_hint':info['account_hint'],'seller_id':source_seller}])
             old = db.execute('SELECT * FROM templates WHERE shop=? AND marketplace=? AND category=? AND version=?', (shop, market, category, version)).fetchone()
             if old:
                 if old['sha256'] != digest(data):

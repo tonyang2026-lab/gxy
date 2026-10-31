@@ -31,6 +31,29 @@ class RosterTests(unittest.TestCase):
         for text in ['店铺\t卖家记号阿联酋\t卖家记号沙特\n测试甲\tATEST001\tATEST002', '店铺,AE,SA\n测试甲,ATEST001,ATEST002']:
             self.assertEqual(len(roster.parse(text)), 2)
 
+    def test_spaces_and_wrapped_store_name(self):
+        text='店铺    卖家记号阿联酋    卖家记号沙特\nDemo AE    ATEST001    ATEST002\nlong_store_name\n    ATEST003    ATEST003\n'
+        records=roster.parse(text)
+        self.assertEqual(len(records),4)
+        self.assertEqual({r['shop'] for r in records},{'Demo AE','long_store_name'})
+
+    def test_editor_without_header_and_region_specific_errors(self):
+        result=roster.import_rows(self.root,[{'shop':'新店','ae':'ATEST001','sa':''}])
+        self.assertEqual(result['site_records'],1)
+        with self.assertRaisesRegex(ValueError,'第 1 行沙特'):
+            roster.import_rows(self.root,[{'shop':'新店','ae':'ATEST001','sa':'wrong'}])
+
+    def test_incomplete_wrapped_row_is_not_guessed(self):
+        with self.assertRaisesRegex(ValueError,'缺少两个|含义不明确'):
+            roster.parse('店铺 卖家记号阿联酋 卖家记号沙特\n甲店 ATEST001\n乙店 ATEST002 ATEST003')
+
+    def test_upload_template_learns_seller_without_manual_import(self):
+        source=Path(self.tmp.name)/'source.xlsm';source.write_bytes(account_book(account='ATEST001'))
+        library.run(SimpleNamespace(command='add',library=str(self.root),source=str(source),shop='新店',marketplace='AE',category='行李箱',version='v1'))
+        targets=roster.targets(self.root,'AE')
+        self.assertEqual(len(targets),1);self.assertTrue(targets[0]['can_generate'])
+        self.assertEqual(roster.editable_directory(self.root),[{'shop':'新店','ae':'ATEST001','sa':''}])
+
     def test_unknown_account_remains_unknown(self):
         roster.import_text(self.root, TABLE)
         self.assertIsNone(library.inspect_template(self.root, account_book(account='ATEST999'), '.xlsm')['recognized_shop'])

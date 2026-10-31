@@ -13,3 +13,5 @@
 textarea{display:block;width:100%;margin:10px 0 15px;padding:12px;border:1px solid #dce4de;border-radius:6px;background:#fbfcfa;color:#35483c;font:12px/1.8 ui-monospace,Consolas,monospace;resize:vertical;tab-size:18;white-space:pre}textarea:focus{outline:2px solid #c5d8b8}
 
 .batch-targets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0 20px}.batch-targets label{display:flex;align-items:center;gap:8px;background:#f5f8f1;padding:12px;border-radius:6px;overflow-wrap:anywhere}.batch-targets input,.batch-save input{display:inline-block;width:auto;margin:0;flex-shrink:0}.batch-save{display:flex;gap:8px;align-items:center;margin:15px 0 20px}@media(max-width:650px){.batch-targets{grid-template-columns:1fr}}
+
+details summary{cursor:pointer;color:#326044;padding:12px 0;font-weight:600}.shop-toolbar{display:flex;gap:15px;align-items:center;margin:15px 0}.shop-editor input{width:100%;min-width:135px;padding:10px;font-size:12px}.shop-editor td{padding:8px}.shop-editor td:first-child input{min-width:170px}.shop-editor .text-button{white-space:nowrap}#shop-roster-form>.button{margin-top:16px}#shop-paste-area{margin-bottom:20px}

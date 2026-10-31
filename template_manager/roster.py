@@ -18,6 +18,34 @@ def fingerprint(seller):
     return hashlib.sha256(('amazon-contributor:amzn1.cr.o.'+seller).encode()).hexdigest()
 
 
+def wrapped_rows(lines):
+    """Repair copied rendered tables only when complete ID pairs are unambiguous."""
+    header = None
+    start = 0
+    for count in range(1, min(3, len(lines))+1):
+        candidate = ' '.join(clean(s) for s in lines[:count])
+        match = re.fullmatch(r'(店铺(?:名称)?|shop)\s+(卖家记号阿联酋|阿联酋卖家记号|AE|seller_id_ae)\s+(卖家记号沙特|沙特卖家记号|SA|seller_id_sa)', candidate, re.I)
+        if match:
+            header=list(match.groups());start=count;break
+    if header is None:
+        raise ValueError('无法识别粘贴格式，请使用下方逐行编辑表格，或从 Excel 复制三列')
+    rows=[header];pending=[]
+    seller=r'A[A-Z0-9]{5,30}'
+    for line in lines[start:]:
+        pending.append(clean(line))
+        combined=' '.join(pending)
+        match=re.fullmatch(r'(.+?)\s+('+seller+r')\s+('+seller+r')',combined)
+        if not match:
+            continue
+        shop=match[1].strip()
+        if re.search(r'(?<![\w-])'+seller+r'(?![\w-])',shop):
+            raise ValueError('有一行记号缺失或换行含义不明确，请在逐行表格中核对，未保存任何记录')
+        rows.append([shop,match[2],match[3]]);pending=[]
+    if pending:
+        raise ValueError('末尾店铺行缺少两个完整记号，请改用逐行表格补全，未保存任何记录')
+    return rows
+
+
 def parse(text):
     if not isinstance(text, str) or not text.strip() or len(text) > 100000:
         raise ValueError('请粘贴店铺对照表（最多 10 万字符）')
@@ -31,6 +59,9 @@ def parse(text):
         except csv.Error:
             dialect = csv.excel_tab
         rows = [[clean(v) for v in row] for row in csv.reader(io.StringIO(text), dialect) if any(v.strip() for v in row)]
+        if not rows or len(rows[0])!=3 or any(len(r)!=len(rows[0]) for r in rows[1:]):
+            if not any(c in lines[0] for c in ',;|'):
+                rows=wrapped_rows(lines)
     if len(rows) < 2:
         raise ValueError('对照表必须包含表头和至少一行店铺')
     header = rows[0]
@@ -63,6 +94,36 @@ def parse(text):
     if not result or len(result) > 1000:
         raise ValueError('对照表需包含 1–1000 条店铺站点记录')
     return list(result.values())
+
+
+def import_rows(root, rows):
+    if not isinstance(rows,list) or not 1<=len(rows)<=500:
+        raise ValueError('请填写 1–500 行店铺')
+    out=io.StringIO();writer=csv.writer(out);writer.writerow(['店铺','AE','SA'])
+    for number,row in enumerate(rows,1):
+        if not isinstance(row,dict) or any(not isinstance(row.get(k,''),str) for k in ('shop','ae','sa')):
+            raise ValueError(f'第 {number} 行内容格式无效')
+        values=[row.get(k,'').strip() for k in ('shop','ae','sa')]
+        if not any(values):continue
+        if not values[0] or not any(values[1:]):
+            raise ValueError(f'第 {number} 行需要店铺名称和至少一个地区的卖家记号')
+        for label,value in zip(['阿联酋','沙特'],values[1:]):
+            if value and not re.fullmatch(r'A[A-Z0-9]{5,30}',value):
+                raise ValueError(f'第 {number} 行{label}记号格式有误，应为以 A 开头的大写字母和数字')
+        writer.writerow(values)
+    return import_text(root,out.getvalue())
+
+
+def editable_directory(root):
+    db=library.connect(Path(root))
+    try:
+        groups={}
+        for row in db.execute('SELECT * FROM shop_registry ORDER BY shop,marketplace'):
+            item=groups.setdefault(row['shop'],{'shop':row['shop'],'ae':'','sa':''})
+            item[row['marketplace'].lower()]=row['seller_id']
+        return list(groups.values())
+    finally:
+        db.close()
 
 
 def apply(db, records, bindings=()):
