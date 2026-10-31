@@ -123,6 +123,19 @@ class AITests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '不支持图片'):
             ai.enrich(report, inventory.read_tables(data, 'a.csv'), [], data, 'a.csv', self.settings, include_images=True)
 
+    def test_500_limit_processes_100_batches_and_keeps_overflow_local(self):
+        data=('SKU,title\n'+''.join(f'{i},unknown\n' for i in range(501))).encode()
+        report=inventory.analyze(data,'a.csv','AE',[],sheet='CSV')
+        def mock_classify(settings,products,templates,images):
+            return {p['row']:{'row':p['row'],'category':'测试类目','confidence':'medium','evidence':'模拟分类','template_id':None} for p in products}
+        with patch.object(ai,'classify',side_effect=mock_classify) as call:
+            result=ai.enrich(report,inventory.read_tables(data,'a.csv'),[],data,'a.csv',self.settings,limit=500)
+        self.assertEqual(call.call_count,100)
+        self.assertEqual(result['ai_summary']['completed'],500)
+        self.assertNotIn('ai',result['items'][-1])
+        with self.assertRaisesRegex(ValueError,'1–500'):
+            ai.enrich(report,inventory.read_tables(data,'a.csv'),[],data,'a.csv',self.settings,limit=501)
+
 
 if __name__ == '__main__':
     unittest.main()

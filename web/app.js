@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const UI_REVISION='下载按钮修复版 1031.2';
+const UI_REVISION='AI 500件版 1031.3';
 ensureInventoryShopPicker();
 let templates = [];
 let inventoryShopNames=[];
@@ -417,3 +417,5 @@ $('download-inventory-templates').addEventListener('click',async()=>{
     const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('对应类别表格已开始下载');
   }catch(e){notify(e.message,true);}finally{button.disabled=!inventoryDownloadIds().length;}
 });
+
+$('inventory-ai-limit').max='500';$('inventory-ai-limit').value='500';

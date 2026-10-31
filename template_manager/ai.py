@@ -209,8 +209,8 @@ def classify(settings, products, templates, images):
 
 def enrich(report, tables, templates, data, filename, settings, include_images=False, limit=30):
     from .inventory import header_info
-    if type(limit) is not int or not 1 <= limit <= 100:
-        raise ValueError('每次 AI 分析商品数须在 1–100 之间')
+    if type(limit) is not int or not 1 <= limit <= 500:
+        raise ValueError('每次 AI 分析商品数须在 1–500 之间')
     settings = Selection(settings)
     if not settings.snapshot()[2]:
         raise ValueError('请管理员先配置 AI API 密钥')
