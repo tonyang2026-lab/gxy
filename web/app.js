@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
 let templates = [];
+let inventoryShopNames=[];
 const selectedTemplates=new Set();
 let visibleTemplates=[];
 let currentRole='viewer';
@@ -78,7 +79,7 @@ async function load() {
   $('total').textContent=templates.length;$('markets').textContent=new Set(templates.map(t=>t.marketplace)).size;$('categories').textContent=new Set(templates.map(t=>t.category)).size;
   const selected=$('filter-market').value;$('filter-market').replaceChildren(new Option('全部站点',''));
   [...new Set(templates.map(t=>t.marketplace))].sort().forEach(m=>$('filter-market').add(new Option(m,m)));
-  $('filter-market').value=selected;const selectedShop=$('filter-shop').value;const shops=[...new Set(['通用模板',...registeredShops,...templates.map(t=>t.shop||'通用模板')])].sort();$('filter-shop').replaceChildren(new Option('全部店铺',''),...shops.map(shop=>new Option(shop,shop)));$('filter-shop').value=selectedShop;$('shop-options').replaceChildren(...shops.map(shop=>new Option(shop,shop)));for(const [id,field,label] of [['filter-category','category','全部类别'],['filter-version','version','全部版本']]){const value=$(id).value;$(id).replaceChildren(new Option(label,''),...[...new Set(templates.map(t=>t[field]))].sort().map(item=>new Option(item,item)));$(id).value=value;}render();
+  $('filter-market').value=selected;const selectedShop=$('filter-shop').value;const shops=[...new Set(['通用模板',...registeredShops,...templates.map(t=>t.shop||'通用模板')])].sort();$('filter-shop').replaceChildren(new Option('全部店铺',''),...shops.map(shop=>new Option(shop,shop)));$('filter-shop').value=selectedShop;$('shop-options').replaceChildren(...shops.map(shop=>new Option(shop,shop)));inventoryShopNames=shops;updateInventoryShopOptions();for(const [id,field,label] of [['filter-category','category','全部类别'],['filter-version','version','全部版本']]){const value=$(id).value;$(id).replaceChildren(new Option(label,''),...[...new Set(templates.map(t=>t[field]))].sort().map(item=>new Option(item,item)));$(id).value=value;}render();
 }
 async function encoded(file) {
   if(file.size>32*1024*1024)throw new Error('文件不能超过 32 MB');
@@ -139,7 +140,7 @@ function resetInventory(clearMapping=true) {
   if(clearMapping){inventoryAICache={};inventoryOverrides={};inspectedFile=null;inspectedSheet=null;$('inventory-mapping').hidden=true;}
 }
 $('inventory-file').addEventListener('change',()=>{resetInventory();$('inventory-ai-consent').checked=false;});
-$('inventory-market').addEventListener('change',()=>{inventoryAICache={};inventoryOverrides={};resetInventory(false);});
+$('inventory-market').addEventListener('change',()=>{updateInventoryShopOptions();inventoryAICache={};inventoryOverrides={};resetInventory(false);});
 for(const id of ['inventory-sku','inventory-title','inventory-category']) $(id).addEventListener('change',()=>{inventoryAICache={};inventoryOverrides={};resetInventory(false);});
 $('inventory-header').addEventListener('input',()=>{inventoryAICache={};inventoryOverrides={};resetInventory(false);});
 async function inspectInventory(reuseSelection=false) {
@@ -209,7 +210,8 @@ function renderInventory(report) {
     const box=document.createElement('article');box.className='analysis-group category-template '+group.status;
     const badge=document.createElement('span');badge.className='category-state '+group.status;badge.textContent=group.template?(group.status==='review'?'待确认':'可下载'):(group.status==='review'?'待识别':'需补充');box.append(badge);
     const title=document.createElement('h3');title.textContent=group.category==='无法识别类目'?'待识别的商品类别':group.category;
-    const detail=document.createElement('p');detail.textContent=group.template?(group.status==='review'?'找到候选模板 · 类别需确认':'已找到对应模板'):(group.status==='review'?'尚不能确定对应模板':'该店铺和地区暂无对应模板');box.append(title,detail);
+    const detail=document.createElement('p');detail.textContent=group.template?(group.status==='review'?'找到候选模板 · 类别需确认':'已找到对应模板'):(group.status==='review'?'类别待确认，当前店铺未匹配到模板':'该店铺和地区暂无对应模板');box.append(title,detail);
+    if(!group.template){const unavailable=document.createElement('button');unavailable.type='button';unavailable.className='button secondary';unavailable.disabled=true;unavailable.textContent='暂无可下载表格';box.append(unavailable);}
     if(group.template){
       const file=document.createElement('p');file.className='template-version';file.textContent=group.template.filename+' · '+group.template.version+' · '+(group.template.shop||'通用模板');
       const link=document.createElement('a');link.href='/api/download/'+encodeURIComponent(group.template.id);link.className='button';link.textContent=group.status==='review'?'下载候选类别表格':'下载对应类别表格';box.append(file,link);
@@ -378,3 +380,13 @@ $('delete-selected').addEventListener('click',async()=>{
   busy=true;updateTemplateSelection();
   try{const result=await postJSON('/api/templates/delete',{ids:selected.map(t=>t.id)});inventoryAICache={};resetInventory(false);await load();notify('已删除 '+result.count+' 条模板'+(result.cleanup_pending?'；部分磁盘文件清理待完成':''));}catch(e){notify(e.message,true);}finally{busy=false;updateTemplateSelection();}
 });
+
+function updateInventoryShopOptions(){
+  const select=$('inventory-shop'),selected=select.value,market=$('inventory-market').value;
+  select.replaceChildren(new Option('请选择实际店铺',''));
+  for(const shop of inventoryShopNames){const count=templates.filter(t=>(t.shop||'通用模板')===shop&&(!market||t.marketplace===market)&&!t.account_scope_unknown).length;const label=shop==='通用模板'?'通用模板（只查公共库 · '+count+' 份）':shop+' · '+count+' 份'+(market?' '+market:'')+'模板';select.add(new Option(label,shop));}
+  select.value=selected;
+  const count=templates.filter(t=>(t.shop||'通用模板')===selected&&(!market||t.marketplace===market)&&!t.account_scope_unknown).length;
+  $('inventory-shop-hint').textContent=!selected?'请先选择实际店铺，再识别库存。':selected==='通用模板'?'当前仅检索公共模板库，不会查询其他店铺专用模板。':'当前店铺“'+selected+'”已有 '+count+' 份'+(market?' '+market:'')+'模板；识别后按类别匹配，并允许使用适用的通用模板。';
+}
+$('inventory-shop').addEventListener('change',()=>{const selected=$('inventory-shop').value;updateInventoryShopOptions();$('inventory-shop').value=selected;});
