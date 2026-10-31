@@ -5,3 +5,7 @@ qq-local-bot/.env
 qq-local-bot/data/
 qq-account-ai/.env
 qq-account-ai/data/
+amazon-template-library/data/
+amazon-template-library/__pycache__/
+amazon-template-library/tests/__pycache__/
+*.pyc

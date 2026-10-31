@@ -1,0 +1,25 @@
+name: Test Amazon template library
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/amazon-template-library]
+  pull_request:
+    paths: ['amazon-template-library/**', '.github/workflows/amazon-template-library.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.12']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: amazon-template-library
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m unittest discover -s tests -v
