@@ -118,6 +118,27 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '行号'):
             self.report('SKU,品名\n1,x\n', category_overrides={'999': '手机壳'})
 
+    def test_users_luggage_example_without_exact_product_name(self):
+        title = '三件套 TSA-Compatible Lock 宽拉杆 材质: ABS+PC 尺寸: 20/24/28'
+        r = self.report('SKU,品名\nDEMO-LUG-001,'+title+'\n', [template(category='Luggage')])
+        self.assertEqual(r['items'][0]['suggested_category'], '行李箱')
+        self.assertEqual(r['items'][0]['template']['category'], 'Luggage')
+        self.assertIn('组合属性', r['items'][0]['evidence'])
+        self.assertEqual(r['items'][0]['status'], 'review')
+
+    def test_lock_or_material_alone_not_luggage(self):
+        for title in ['TSA-Compatible Lock', 'ABS+PC 三件套 20/24/28', '拉杆替换配件 TSA ABS+PC 20/24/28']:
+            self.assertNotIn('行李箱', [label for label, _ in inventory.hits(title)])
+
+    def test_attributes_in_separate_columns(self):
+        r = self.report('SKU,品名,材质,尺寸,描述\n1,三件套,ABS+PC,20/24/28,TSA 宽拉杆\n')
+        self.assertEqual(r['items'][0]['suggested_category'], '行李箱')
+
+    def test_synonym_category_candidate_not_false_missing(self):
+        r = self.report('SKU,品名,类目\n1,手机保护套,手机保护套\n', [template(category='phone cases')])
+        self.assertEqual(r['items'][0]['status'], 'review')
+        self.assertEqual(r['items'][0]['template']['category'], 'phone cases')
+
 
 if __name__ == '__main__':
     unittest.main()

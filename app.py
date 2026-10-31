@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from template_manager import library
 from template_manager.auth import Auth
 from template_manager import inventory
+from template_manager import ai
 
 WEB = Path(__file__).parent / 'web'
 LOCK = threading.Lock()
@@ -97,7 +98,9 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if path.path == '/api/templates':
                     q = parse_qs(path.query)
-                    self.send(self.call('list', marketplace=q.get('marketplace', [None])[0], category=q.get('category', [None])[0]))
+                    self.send(self.call('list', marketplace=q.get('marketplace', [None])[0], category=q.get('category', [None])[0], shop=q.get('shop', [None])[0]))
+                elif path.path == '/api/ai/settings':
+                    self.send(self.server.ai.public())
                 elif path.path == '/api/backup':
                     with tempfile.TemporaryDirectory() as d:
                         dest = Path(d) / 'backup.zip'
@@ -145,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
                 suffix = '; Secure' if self.server.scheme == 'https' else ''
                 self.send({'ok': True}, cookie=f'session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + suffix)
                 return
-            roles = ('admin',) if self.path in ('/api/users', '/api/restore') else ('admin', 'editor')
+            roles = ('admin',) if self.path in ('/api/users', '/api/restore', '/api/ai/settings') else ('admin', 'editor')
             if self.path in ('/api/logout', '/api/inventory/inspect', '/api/inventory/analyze'):
                 roles = None
             if not self.identity(roles):
@@ -158,22 +161,52 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.auth.create(body['username'], body['password'], body['role'])
                 self.send({'ok': True})
                 return
+            if self.path == '/api/ai/settings':
+                if self.server.scheme != 'https' and self.client_address[0] not in ('127.0.0.1', '::1'):
+                    self.send({'error': 'HTTP 模式下仅允许在服务器本机配置 API 密钥，请用 127.0.0.1 打开软件'}, 403)
+                    return
+                self.server.ai.configure(body.get('provider'), body.get('model'), body.get('api_key', ''))
+                self.send(self.server.ai.public())
+                return
+            if self.path == '/api/template-shop':
+                with LOCK:
+                    self.send(library.move_shop(self.root, body.get('id'), body.get('shop')))
+                return
             data = base64.b64decode(body['data'], validate=True)
             if len(data) > 32 * 1024 * 1024:
                 raise ValueError('文件不能超过 32 MB')
+            name = body.get('filename', '')
+            if not isinstance(name, str) or not name or '/' in name or '\\' in name or len(name) > 200:
+                raise ValueError('文件名无效')
+            if self.path == '/api/inventory/inspect':
+                self.send(inventory.inspect(data, name, body.get('sheet'), body.get('header_row')))
+                return
+            if self.path == '/api/template/inspect':
+                with LOCK:
+                    self.send(library.inspect_template(self.root, data, Path(name).suffix))
+                return
+            if self.path == '/api/inventory/analyze':
+                with LOCK:
+                    templates = self.call('list', marketplace=None, category=None)
+                report = inventory.analyze(data, name, body.get('marketplace', ''), templates, body.get('sheet'), body.get('header_row'), body.get('mapping'), body.get('category_overrides'), body.get('shop', library.GLOBAL_SHOP))
+                if body.get('use_ai') is True:
+                    if body.get('ai_consent') is not True:
+                        raise ValueError('请先同意将本次分析涉及的商品资料发送到所选 AI 服务商')
+                    if not self.server.ai_job_lock.acquire(blocking=False):
+                        self.send({'error': '其他成员正在进行 AI 分析，请稍后重试，避免重复产生费用'}, 409)
+                        return
+                    try:
+                        report = ai.enrich(report, inventory.read_tables(data, name), templates, data, name, self.server.ai, body.get('include_images') is True, body.get('ai_limit', 30))
+                    finally:
+                        self.server.ai_job_lock.release()
+                self.send(report)
+                return
             with LOCK, tempfile.TemporaryDirectory() as d:
-                name = body.get('filename', '')
-                if not name or '/' in name or '\\' in name or len(name) > 200:
-                    raise ValueError('文件名无效')
                 source = Path(d) / name
                 source.write_bytes(data)
-                if self.path == '/api/inventory/inspect':
-                    self.send(inventory.inspect(data, name, body.get('sheet'), body.get('header_row')))
-                elif self.path == '/api/inventory/analyze':
-                    templates = self.call('list', marketplace=None, category=None)
-                    self.send(inventory.analyze(data, name, body.get('marketplace', ''), templates, body.get('sheet'), body.get('header_row'), body.get('mapping'), body.get('category_overrides')))
-                elif self.path == '/api/upload':
+                if self.path == '/api/upload':
                     meta = {k: str(body.get(k, '')).strip() for k in ('marketplace', 'category', 'version')}
+                    meta['shop'] = str(body.get('shop', library.GLOBAL_SHOP)).strip()
                     if any(len(v) > 120 for v in meta.values()):
                         raise ValueError('站点、类目或版本过长')
                     self.send(self.call('add', source=str(source), **meta))
@@ -207,6 +240,8 @@ def create_server(data_dir, port=8765, host='127.0.0.1', allowed_hosts=None, sch
     data_dir = Path(data_dir)
     server = ThreadingHTTPServer((host, port), partial(Handler, data_dir=data_dir))
     server.auth = Auth(data_dir.parent / 'accounts.sqlite3')
+    server.ai = ai.Settings(data_dir.parent / 'ai-config.json')
+    server.ai_job_lock = threading.Lock()
     server.allowed_hosts = set(allowed_hosts or [f'127.0.0.1:{server.server_port}', f'localhost:{server.server_port}'])
     server.scheme = scheme
     return server

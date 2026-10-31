@@ -1,5 +1,6 @@
 """Read inventory without modifying it and propose template coverage with evidence."""
 import csv
+from difflib import SequenceMatcher
 import io
 import posixpath
 import re
@@ -7,6 +8,7 @@ import unicodedata
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import zipfile
+from .library import GLOBAL_SHOP
 
 NS = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 R = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'
@@ -20,7 +22,7 @@ ALIASES = {
 # These are local search aids, not Amazon's authoritative category taxonomy.
 FAMILIES = [
     ('电热水壶', ['电热水壶', '电水壶', '烧水壶', 'electric kettle']),
-    ('手机壳', ['手机壳', '手机保护壳', 'phone case']),
+    ('手机壳', ['手机壳', '手机保护壳', '手机保护套', '手机套', 'phone case', 'phone cases', 'mobile phone cover', 'smartphone case']),
     ('手机支架', ['手机支架', 'phone stand', 'phone holder']),
     ('数据线', ['数据线', '充电线', 'usb cable', 'charging cable']),
     ('充电器', ['充电器', '电源适配器', 'charger', 'power adapter']),
@@ -30,7 +32,7 @@ FAMILIES = [
     ('床单', ['床单', 'bed sheet', 'bedsheet']),
     ('毛巾', ['毛巾', 'towel']),
     ('背包', ['背包', '双肩包', 'backpack']),
-    ('行李箱', ['行李箱', '拉杆箱', 'suitcase']),
+    ('行李箱', ['行李箱', '拉杆箱', '旅行箱', '登机箱', '旅行拉杆箱', '行李箱套装', '拉杆箱套装', 'suitcase', 'suitcases', 'luggage', 'luggage set', 'luggage sets', 'trolley case', 'trolley cases', 'carry on suitcase', 'carry-on luggage']),
     ('项链', ['项链', 'necklace']),
     ('耳环', ['耳环', 'earring']),
     ('手链', ['手链', 'bracelet']),
@@ -193,12 +195,75 @@ def hits(text):
         matched = [w for w in words if (re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', folded) if w.isascii() else w in folded)]
         if matched:
             found.append((label, matched[0]))
+    # A conjunction of independent attributes can identify luggage without its name.
+    # A lock or an ABS/PC material alone is deliberately insufficient.
+    if not any(label == '行李箱' for label, _ in found):
+        handle = bool(re.search(r'拉杆|trolley\s*handle|telescopic\s*handle', folded))
+        tsa = bool(re.search(r'\btsa\b', folded))
+        material = bool(re.search(r'abs\s*[+/&＋]\s*pc|pc\s*[+/&＋]\s*abs|聚碳酸酯', folded))
+        dimensions = len(set(re.findall(r'(?<!\d)(20|24|28)(?!\d)', folded))) >= 2
+        accessory = bool(re.search(r'替换|配件|箱套|replacement|luggage\s*cover', folded))
+        if handle and sum((tsa, material, dimensions)) >= 2 and not accessory:
+            clues = ['拉杆结构'] + (['TSA 锁'] if tsa else []) + (['ABS+PC 材质'] if material else []) + (['20/24/28 英寸系列尺寸'] if dimensions else [])
+            found.append(('行李箱', '组合属性：' + ' + '.join(clues)))
     return found
 
 
-def analyze(data, filename, marketplace, templates, sheet=None, header_row=None, mapping=None, category_overrides=None):
+def canonical_category(value):
+    """Exact local synonyms only; broad categories and substring guesses are excluded."""
+    key = norm(value)
+    for label, aliases in FAMILIES:
+        if key in {norm(a) for a in [label] + aliases}:
+            return label
+    return None
+
+
+def template_candidates(category, inferred, same_site, shop=GLOBAL_SHOP):
+    """Search beyond identical labels, but mark all synonym/fuzzy matches for review."""
+    result = []
+    wanted = {label for label, _ in inferred}
+    if category and canonical_category(category):
+        wanted.add(canonical_category(category))
+    for t in same_site:
+        template_family = canonical_category(t['category'])
+        if template_family and template_family in wanted:
+            result.append((3, t, '模板登记类目别名：' + t['category'] + ' → ' + template_family))
+        elif category and len(norm(category)) >= 4 and len(norm(t['category'])) >= 4:
+            score = SequenceMatcher(None, norm(category), norm(t['category'])).ratio()
+            if score >= 0.86:
+                result.append((1, t, '登记类目文字近似（需核对）：' + t['category']))
+    return sorted(result, key=lambda entry: (entry[0], entry[1].get('shop', GLOBAL_SHOP) == shop, entry[1]['created_at']), reverse=True)
+
+
+def descriptive_context(headers, values, title):
+    fields = {'description', 'productdescription', 'specification', 'specifications', 'material', 'size', 'features', '产品描述', '商品描述', '描述', '规格', '产品规格', '规格参数', '参数', '材质', '尺寸', '特点', '卖点'}
+    parts = [title] if title else []
+    used = []
+    for i, header in enumerate(headers):
+        if norm(header) in fields and i < len(values) and values[i] and values[i] not in parts:
+            parts.append(values[i]); used.append(header)
+    return '\n'.join(parts), used
+
+
+def summarize(report):
+    records = report['items']
+    groups = {}
+    for record in records:
+        key = (record['status'], record['suggested_category'] or '无法识别类目', (record.get('template') or {}).get('id'))
+        group = groups.setdefault(key, {'status': key[0], 'category': key[1], 'count': 0, 'template': record.get('template'), 'rows': []})
+        group['count'] += 1
+        group['rows'].append(record['row'])
+    report['summary'] = {'total': len(records), **{state: sum(r['status'] == state for r in records) for state in ('available', 'missing', 'review')}}
+    report['groups'] = list(groups.values())
+    return report
+
+
+def analyze(data, filename, marketplace, templates, sheet=None, header_row=None, mapping=None, category_overrides=None, shop=GLOBAL_SHOP):
     if not re.fullmatch('[A-Z]{2}', marketplace or ''):
         raise ValueError('请明确选择目标站点，不能从商品语言推测站点')
+    if not isinstance(shop, str) or not shop.strip() or len(shop) > 120:
+        raise ValueError('请明确选择店铺，店铺名称最多 120 字')
+    shop = shop.strip()
     tables = read_tables(data, filename)
     table = next((t for t in tables if t['name'] == sheet), None)
     if table is None:
@@ -225,7 +290,7 @@ def analyze(data, filename, marketplace, templates, sheet=None, header_row=None,
     for row, label in category_overrides.items():
         if row not in valid_rows or not isinstance(label, str) or not label.strip() or len(label) > 120:
             raise ValueError('确认的行号或类目无效，请重新读取库存表')
-    same_site = [t for t in templates if t['marketplace'] == marketplace]
+    same_site = [t for t in templates if t['marketplace'] == marketplace and t.get('shop', GLOBAL_SHOP) in (shop, GLOBAL_SHOP) and not t.get('account_scope_unknown')]
     by_category = {}
     for t in same_site:
         by_category.setdefault(norm(t['category']), []).append(t)
@@ -240,7 +305,8 @@ def analyze(data, filename, marketplace, templates, sheet=None, header_row=None,
         category = confirmed or original_category
         if len(records) >= MAX_ROWS:
             raise ValueError('最多分析 10000 个商品，请拆分文件')
-        inferred = hits(title)
+        context, context_columns = descriptive_context(headers, values, title)
+        inferred = hits(context)
         exact = by_category.get(norm(category), []) if category else []
         label = category or (inferred[0][0] if len(inferred) == 1 else '')
         candidates = exact
@@ -248,16 +314,29 @@ def analyze(data, filename, marketplace, templates, sheet=None, header_row=None,
         evidence = f'库存表第 {row_number} 行类目“{category}”与模板库登记类目一致' if exact else (f'库存表第 {row_number} 行明确填写类目“{category}”，目标站点无同名登记模板' if category else '库存表没有明确类目，需要人工确认')
         if confirmed:
             evidence = f'用户已将第 {row_number} 行类目确认为“{confirmed}”；' + ('目标站点有同登记类目模板' if exact else '目标站点没有同登记类目模板')
+        related = []
+        if not exact:
+            # An explicit but different category may be a synonym, typo or contradictory.
+            related = template_candidates(category, inferred if not category else [], same_site, shop)
+            candidates = [entry[1] for entry in related]
+            if category and related:
+                status = 'review'
+                evidence += '；发现别名或近似类目模板，需确认是否为同一适用类目'
         if not category:
-            candidates = [t for t in same_site if any(norm(t['category']) == norm(family) for family, _ in inferred)]
             if inferred:
-                evidence += '；品名关键词：' + '、'.join(f'{word} → {family}' for family, word in inferred)
+                evidence += '；文字/属性依据：' + '、'.join(f'{word} → {family}' for family, word in inferred)
+                if context_columns:
+                    evidence += '；参考描述列：' + '、'.join(context_columns)
             if len(inferred) > 1:
                 label = ' / '.join(f for f, _ in inferred)
-        candidates = sorted(candidates, key=lambda t: t['created_at'], reverse=True)
+        if related:
+            evidence += '；' + related[0][2]
+        if exact:
+            candidates = sorted(candidates, key=lambda t: (t.get('shop', GLOBAL_SHOP) == shop, t['created_at']), reverse=True)
         # Keep separate category variants and older versions visible; latest is a suggestion only.
-        suggested = candidates[0] if candidates and (exact or len(inferred) == 1) else None
-        suggestion = {'id': suggested['id'], 'filename': suggested['original_name'], 'category': suggested['category'], 'version': suggested['version']} if suggested else None
+        suggested = candidates[0] if candidates and (exact or len(inferred) == 1 or (category and related)) else None
+        suggestion = {'id': suggested['id'], 'filename': suggested['original_name'], 'category': suggested['category'], 'version': suggested['version'], 'shop': suggested.get('shop', GLOBAL_SHOP)} if suggested else None
+        evidence += f'；仅检查店铺“{shop}”及通用模板，不借用其他店铺专用模板'
         record = {'row': row_number, 'sku': sku, 'title': title, 'original_category': original_category, 'category': category, 'confirmed': bool(confirmed), 'suggested_category': label, 'status': status, 'evidence': evidence, 'template': suggestion, 'candidates': [{'id': t['id'], 'filename': t['original_name'], 'category': t['category'], 'version': t['version']} for t in candidates[:20]], 'action': '核对模板适用范围后下载使用' if status == 'available' else ('补充该站点和类目的亚马逊原始模板，或核对库内类目命名是否不同' if status == 'missing' else '先确认亚马逊类目，再判断需要补充的模板')}
         records.append(record)
         key = (status, label or '无法识别类目')
@@ -266,4 +345,4 @@ def analyze(data, filename, marketplace, templates, sheet=None, header_row=None,
         group['rows'].append(row_number)
     if not records:
         raise ValueError('表头之后没有可分析的商品行，请检查列映射和表头行号')
-    return {'filename': filename, 'marketplace': marketplace, 'sheet': sheet, 'header_row': table['rows'][pos][0], 'summary': {'total': len(records), 'available': sum(r['status'] == 'available' for r in records), 'missing': sum(r['status'] == 'missing' for r in records), 'review': sum(r['status'] == 'review' for r in records)}, 'groups': list(groups.values()), 'items': records, 'warnings': table['warnings'] + ['结果只检查模板覆盖，不检查商品资料。类目匹配依据库内登记信息，不代表亚马逊官方类目审核；同名模板仍需核对适用范围。', '缺少模板指无同站点同登记类目，可能存在不同命名；品名推断只供确认，不自动判定缺失。', '库存文件仅在本次请求内分析，不存入共享模板库。']}
+    return summarize({'filename': filename, 'marketplace': marketplace, 'shop': shop, 'sheet': sheet, 'header_row': table['rows'][pos][0], 'items': records, 'warnings': table['warnings'] + ['结果只检查模板覆盖，不检查商品资料。类目匹配依据库内登记信息，不代表亚马逊官方类目审核；同名模板仍需核对适用范围。', '缺少模板指无同店铺/通用、同站点同登记类目，可能存在不同命名；品名/属性推断只供确认，不自动判定缺失。', '本地规则不读取图片；开启 AI 图片分析后才读取支持格式的内嵌图片。', '库存文件仅在本次请求内分析，不存入共享模板库。']})

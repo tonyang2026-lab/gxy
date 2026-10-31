@@ -8,6 +8,7 @@ import threading
 import unittest
 import zipfile
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app import create_server
 from template_manager import library
@@ -99,6 +100,28 @@ class SharedLibraryTest(unittest.TestCase):
     def test_static_ui(self):
         for path in ('/', '/style.css', '/app.js'):
             self.assertEqual(self.req('GET', path)[0], 200)
+
+    def test_ai_config_permissions_consent_and_result(self):
+        owner, reader = self.login('owner'), self.login('reader')
+        config = {'provider': 'qwen', 'model': 'qwen-vl-plus', 'api_key': 'unit-test-not-a-real-key'}
+        self.assertEqual(self.req('POST', '/api/ai/settings', config, reader)[0], 403)
+        status, raw, _ = self.req('POST', '/api/ai/settings', config, owner)
+        self.assertEqual(status, 200, raw)
+        self.assertNotIn(b'unit-test-not-a-real-key', raw)
+        payload = {'filename': 'stock.csv', 'data': base64.b64encode(b'SKU,title\nA,unknown\n').decode(), 'marketplace': 'AE', 'sheet': 'CSV', 'use_ai': True}
+        with patch('urllib.request.urlopen') as remote:
+            self.assertEqual(self.req('POST', '/api/inventory/analyze', payload, owner)[0], 400)
+            remote.assert_not_called()
+        payload['ai_consent'] = True
+        answer = {'row': 2, 'category': '行李箱', 'confidence': 'high', 'evidence': '实物候选判断', 'template_id': None}
+        remote_response = io.BytesIO(json.dumps({'choices': [{'message': {'content': json.dumps({'items': [answer]})}}]}).encode())
+        with patch('urllib.request.urlopen', return_value=remote_response):
+            status, raw, _ = self.req('POST', '/api/inventory/analyze', payload, owner)
+        self.assertEqual(status, 200, raw)
+        result = json.loads(raw)
+        self.assertEqual(result['ai_summary']['completed'], 1)
+        self.assertEqual(result['items'][0]['suggested_category'], '行李箱')
+        self.assertEqual(result['items'][0]['status'], 'review')
 
 
 if __name__ == '__main__':
