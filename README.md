@@ -2,7 +2,9 @@
 
 ## 下载公司局域网版
 
-[点击下载 ZIP 软件包](downloads/amazon-template-manager-lan.zip?raw=true)
+原局域网包收到浏览器“检测到病毒”报告，原因待调查；请勿绕过安全防护运行。
+
+[下载不含 BAT/EXE 的源码包](downloads/amazon-template-manager-source.zip?raw=true) · [源码启动与安全说明](源码版启动说明.md)
 
 下载后全部解压，先安装 Python 3.9+，再双击 `启动局域网共享.bat`。首次启动设置管理员，并将窗口显示的公司内网地址发给同事。详细步骤见 [公司局域网使用指南](公司局域网使用指南.md)。
 
