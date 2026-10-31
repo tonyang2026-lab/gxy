@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from template_manager import library
 from template_manager.auth import Auth
+from template_manager import inventory
 
 WEB = Path(__file__).parent / 'web'
 LOCK = threading.Lock()
@@ -145,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send({'ok': True}, cookie=f'session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + suffix)
                 return
             roles = ('admin',) if self.path in ('/api/users', '/api/restore') else ('admin', 'editor')
-            if self.path == '/api/logout':
+            if self.path in ('/api/logout', '/api/inventory/inspect', '/api/inventory/analyze'):
                 roles = None
             if not self.identity(roles):
                 return
@@ -166,7 +167,12 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('文件名无效')
                 source = Path(d) / name
                 source.write_bytes(data)
-                if self.path == '/api/upload':
+                if self.path == '/api/inventory/inspect':
+                    self.send(inventory.inspect(data, name, body.get('sheet'), body.get('header_row')))
+                elif self.path == '/api/inventory/analyze':
+                    templates = self.call('list', marketplace=None, category=None)
+                    self.send(inventory.analyze(data, name, body.get('marketplace', ''), templates, body.get('sheet'), body.get('header_row'), body.get('mapping'), body.get('category_overrides')))
+                elif self.path == '/api/upload':
                     meta = {k: str(body.get(k, '')).strip() for k in ('marketplace', 'category', 'version')}
                     if any(len(v) > 120 for v in meta.values()):
                         raise ValueError('站点、类目或版本过长')

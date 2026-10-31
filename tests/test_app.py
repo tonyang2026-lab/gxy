@@ -84,6 +84,18 @@ class SharedLibraryTest(unittest.TestCase):
     def test_wrong_password(self):
         self.assertEqual(self.req('POST', '/api/login', {'username': 'owner', 'password': 'wrong'})[0], 400)
 
+    def test_inventory_readonly_analysis(self):
+        payload = {'filename': '库存.csv', 'data': base64.b64encode('SKU,品名,类目\n001,不明商品,新类目\n'.encode()).decode()}
+        self.assertEqual(self.req('POST', '/api/inventory/inspect', payload)[0], 401)
+        reader = self.login('reader')
+        status, raw, _ = self.req('POST', '/api/inventory/inspect', payload, reader)
+        self.assertEqual(status, 200, raw)
+        info = json.loads(raw)
+        payload.update(marketplace='AE', sheet=info['sheet'], header_row=info['header_row'], mapping=info['mapping'])
+        status, raw, _ = self.req('POST', '/api/inventory/analyze', payload, reader)
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)['summary']['missing'], 1)
+
     def test_static_ui(self):
         for path in ('/', '/style.css', '/app.js'):
             self.assertEqual(self.req('GET', path)[0], 200)
