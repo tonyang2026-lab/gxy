@@ -8,7 +8,7 @@ const PAGES={
   library:{id:'library',title:'模板库',description:'查找和下载团队保存的模板，按店铺、地区与类目筛选。',roles:['admin','editor','viewer']},
   import:{id:'import',title:'上传模板',description:'保存原始模板，自动读取来源，只需确认店铺名称。',roles:['admin','editor']},
   batch:{id:'batch-panel',title:'同地区批量生成',description:'上传一次，为同地区店铺生成独立模板并分别入库。',roles:['admin','editor']},
-  inventory:{id:'inventory',title:'库存识别',description:'上传商品库存表，查看可用模板与需要补充的类目。',roles:['admin','editor','viewer']},
+  inventory:{id:'inventory',title:'库存识别',description:'识别商品类型，直接获取对应类别表格。',roles:['admin','editor','viewer']},
   shops:{id:'shop-roster-panel',title:'店铺管理',description:'管理店铺及各地区的卖家记号。',roles:['admin']},
   ai:{id:'ai-settings-panel',title:'AI 设置',description:'独立配置 AI 服务商、模型与 API 密钥。',roles:['admin']},
   members:{id:'admin-panel',title:'成员管理',description:'添加团队成员，分配管理员、编辑者和只读权限。',roles:['admin']},
@@ -123,7 +123,8 @@ let inspectedSheet=null;
 const statusLabels={available:'已有登记模板',missing:'需要补充模板',review:'类目待确认'};
 for(const option of $('marketplace').options) $('inventory-market').add(new Option(option.text,option.value));
 function resetInventory(clearMapping=true) {
-  inventoryReport=null;$('inventory-result').hidden=true;
+  inventoryReport=null;$('inventory-result').hidden=true;$('inventory-inputs').open=true;$('inventory-inputs').querySelector('summary').textContent='上传库存与识别设置';
+  setInventoryStep(clearMapping?1:($('inventory-mapping').hidden?1:2));
   if(clearMapping){inventoryAICache={};inventoryOverrides={};inspectedFile=null;inspectedSheet=null;$('inventory-mapping').hidden=true;}
 }
 $('inventory-file').addEventListener('change',()=>{resetInventory();$('inventory-ai-consent').checked=false;});
@@ -147,8 +148,8 @@ async function inspectInventory(reuseSelection=false) {
       info.headers.forEach((h,i)=>select.add(new Option('第 '+(i+1)+' 列 · '+(h||'空表头'),String(i))));
       select.value=info.mapping[field]===null?'':String(info.mapping[field]);
     }
-    $('inventory-mapping').hidden=false;
-    $('inventory-preview').textContent='请核对列映射。样例：'+info.preview.map(row=>row.slice(0,8).join(' | ')).join('；')+(info.warnings.length?'；'+info.warnings.join('；'):'');
+    $('inventory-mapping').hidden=false;setInventoryStep(2);$('column-settings').open=info.mapping.title===null&&info.mapping.category===null;
+    $('inventory-preview').textContent='表头已识别，请核对工作表、表头行号及列映射'+(info.warnings.length?'；'+info.warnings.join('；'):'');
     notify('表头已读取，请核对工作表、表头行和列映射');
   }catch(e){notify(e.message,true);}finally{busy=false;}
 }
@@ -166,43 +167,56 @@ $('inventory-sheet').addEventListener('change',async()=>{
       info.headers.forEach((h,i)=>select.add(new Option('第 '+(i+1)+' 列 · '+(h||'空表头'),String(i))));
       select.value=info.mapping[field]===null?'':String(info.mapping[field]);
     }
-    $('inventory-preview').textContent='样例：'+info.preview.map(row=>row.slice(0,8).join(' | ')).join('；');
+    $('inventory-preview').textContent='表头已识别，请核对列映射后开始匹配类别模板。';
   }catch(e){resetInventory();notify(e.message,true);}finally{busy=false;}
 });
 function templateLink(target,template){
   const a=document.createElement('a');a.href='/api/download/'+encodeURIComponent(template.id);a.textContent='下载 '+template.filename+' · '+template.version+' · '+(template.shop||'通用模板');target.append(a);
 }
+function categoryResults(report){
+  const groups=new Map();
+  for(const item of report.items){
+    const category=item.category_key||item.suggested_category||'无法识别类目';
+    if(!groups.has(category))groups.set(category,{category,rows:[],statuses:new Set(),candidates:new Map()});
+    const group=groups.get(category);group.rows.push(item.row);group.statuses.add(item.status);
+    if(item.template)group.candidates.set(item.template.id,item.template);
+  }
+  return [...groups.values()].map(group=>{
+    const candidates=[...group.candidates.values()].sort((a,b)=>{
+      const own=Number(b.shop===report.shop)-Number(a.shop===report.shop);if(own)return own;
+      const date=id=>templates.find(t=>t.id===id)?.created_at||'';return date(b.id).localeCompare(date(a.id));
+    });
+    return {...group,template:candidates[0]||null,status:group.statuses.has('review')?'review':group.statuses.has('available')?'available':'missing'};
+  });
+}
 function renderInventory(report) {
-  inventoryReport=report;const summary=report.summary;
-  $('inventory-summary').textContent=summary.total+' 行商品 · 缺少模板 '+summary.missing+' 行 · 待确认 '+summary.review+' 行';
-  $('inventory-context').textContent='店铺：'+report.shop+' · '+report.filename+' / '+report.sheet+' · 表头第 '+report.header_row+' 行 · 目标站点 '+report.marketplace+' · 已有同登记类目模板 '+summary.available+' 行';
+  inventoryReport=report;const groups=categoryResults(report);
+  $('inventory-summary').textContent='识别到 '+groups.filter(g=>g.category!=='无法识别类目').length+' 类商品 · 对应模板 '+groups.filter(g=>g.template).length+' 类';
+  $('inventory-context').textContent='目标店铺：'+report.shop+' · 地区：'+report.marketplace+'。每种类别仅显示一次。';
   $('inventory-warnings').replaceChildren(...report.warnings.map(w=>{const p=document.createElement('p');p.textContent=w;return p;}));
-  $('inventory-groups').replaceChildren(...report.groups.map(g=>{
-    const box=document.createElement('div');box.className='analysis-group '+g.status;
-    const title=document.createElement('b');title.textContent=g.category+' · '+g.count+' 行';
-    const detail=document.createElement('p');detail.textContent=statusLabels[g.status];box.append(title,detail);
-    if(g.template)templateLink(box,g.template);
-    if(g.category!=='无法识别类目'&&!g.category.includes(' / ')){
-      const input=document.createElement('input');input.className='confirm-category';input.value=g.template?.category||g.category;input.maxLength=120;input.setAttribute('aria-label','确认本组类目');
-      const button=document.createElement('button');button.className='text-button';button.type='button';button.textContent='确认 / 修正本组类目并重查';
-      button.addEventListener('click',()=>{const category=input.value.trim();if(!category){notify('请输入确认后的类目',true);return;}if(busy)return;for(const row of g.rows)inventoryOverrides[String(row)]=category;inventoryLocalRecheck=true;$('inventory-form').requestSubmit($('inventory-form').querySelector('button[type="submit"]'));});box.append(input,button);
+  $('inventory-groups').replaceChildren(...groups.map(group=>{
+    const box=document.createElement('article');box.className='analysis-group category-template '+group.status;
+    const badge=document.createElement('span');badge.className='category-state '+group.status;badge.textContent=group.template?(group.status==='review'?'待确认':'可下载'):(group.status==='review'?'待识别':'需补充');box.append(badge);
+    const title=document.createElement('h3');title.textContent=group.category==='无法识别类目'?'待识别的商品类别':group.category;
+    const detail=document.createElement('p');detail.textContent=group.template?(group.status==='review'?'找到候选模板 · 类别需确认':'已找到对应模板'):(group.status==='review'?'尚不能确定对应模板':'该店铺和地区暂无对应模板');box.append(title,detail);
+    if(group.template){
+      const file=document.createElement('p');file.className='template-version';file.textContent=group.template.filename+' · '+group.template.version+' · '+(group.template.shop||'通用模板');
+      const link=document.createElement('a');link.href='/api/download/'+encodeURIComponent(group.template.id);link.className='button';link.textContent=group.status==='review'?'下载候选类别表格':'下载对应类别表格';box.append(file,link);
+    }else if(group.status==='missing'&&currentRole!=='viewer'){
+      const link=document.createElement('a');link.href='#import';link.className='button secondary';link.textContent='补充该类别模板';box.append(link);
+    }else{
+      const hint=document.createElement('p');hint.textContent=group.status==='review'?'请补充更明确的商品描述，或启用 AI 图文识别。':'请管理员补充对应店铺、地区和类别的原始模板。';box.append(hint);
+    }
+    if(group.status==='review'&&group.category!=='无法识别类目'&&!group.category.includes(' / ')){
+      const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent='确认或修正此类别';
+      const input=document.createElement('input');input.className='confirm-category';input.value=group.template?.category||group.category;input.maxLength=120;input.setAttribute('aria-label','确认类别 '+group.category);
+      const button=document.createElement('button');button.className='text-button';button.type='button';button.textContent='确认类别并重新匹配';
+      button.addEventListener('click',()=>{if(busy)return;const category=input.value.trim();if(!category){notify('请输入确认后的类别',true);return;}for(const row of group.rows)inventoryOverrides[String(row)]=category;inventoryLocalRecheck=true;$('inventory-form').requestSubmit($('inventory-form').querySelector('button[type="submit"]'));});
+      details.append(summary,input,button);box.append(details);
     }
     return box;
   }));
-  $('inventory-rows').replaceChildren();
-  for(const item of report.items.slice(0,200)){
-    const row=document.createElement('tr');cell(row,'第 '+item.row+' 行 / '+(item.sku||'无 SKU'));
-    cell(row,item.title||'无品名','inventory-text');const categoryCell=cell(row,item.category||((item.suggested_category||'未知')+'（推断）'),'inventory-text');
-    if(item.status==='review'){
-      const input=document.createElement('input');input.className='confirm-category';input.placeholder='填写确认后的类目';input.maxLength=120;input.value=item.template?.category||(item.suggested_category&&!item.suggested_category.includes(' / ')?item.suggested_category:'');input.setAttribute('aria-label','第 '+item.row+' 行确认类目');
-      const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent='确认此行并重查';button.addEventListener('click',()=>{if(busy)return;const category=input.value.trim();if(!category){notify('请填写确认后的类目',true);return;}inventoryOverrides[String(item.row)]=category;inventoryLocalRecheck=true;$('inventory-form').requestSubmit($('inventory-form').querySelector('button[type="submit"]'));});categoryCell.append(input,button);
-    }
-    const result=cell(row,statusLabels[item.status]);result.className='inventory-text status-'+item.status;
-    if(item.template){result.append(document.createElement('br'));templateLink(result,item.template);}
-    cell(row,item.evidence+'。'+item.action,'inventory-text');$('inventory-rows').append(row);
-  }
-  $('inventory-limit').textContent=report.items.length>200?'页面显示前 200 行，导出 CSV 包含全部 '+report.items.length+' 行。':'显示全部 '+report.items.length+' 行。入库时间较新的版本仅作为候选，不代表亚马逊官方最新模板。';
-  $('inventory-result').hidden=false;
+  $('inventory-result').hidden=false;setInventoryStep(3);$('inventory-inputs').open=false;$('inventory-inputs').querySelector('summary').textContent='更换库存表 / 调整识别设置';
 }
 $('inventory-form').addEventListener('submit',async event=>{
   event.preventDefault();if(busy)return;
@@ -216,14 +230,14 @@ $('inventory-form').addEventListener('submit',async event=>{
     const report=await sendFile('/api/inventory/analyze',file,{shop:$('inventory-shop').value,marketplace:$('inventory-market').value,sheet:$('inventory-sheet').value,header_row:Number($('inventory-header').value),mapping,category_overrides:inventoryOverrides,use_ai:useAI,include_images:$('inventory-images').checked,ai_consent:$('inventory-ai-consent').checked,ai_limit:Number($('inventory-ai-limit').value)});
     if(localRecheck)reuseAISuggestions(report);
     for(const item of report.items)if(item.ai)inventoryAICache[item.row]=structuredClone(item);
-    if($('inventory-file').files[0]===file){renderInventory(report);notify('分析完成：请查看需要补充的模板及待确认类目');}
+    if($('inventory-file').files[0]===file){renderInventory(report);notify('识别完成，请下载对应类别表格');}
   }catch(e){notify(e.message,true);}finally{busy=false;controls.forEach((control,i)=>control.disabled=disabledBefore[i]);button.textContent=before;}
 });
 $('export-inventory').addEventListener('click',()=>{
   if(!inventoryReport)return;
   const report=inventoryReport;
-  const rows=[['店铺','站点','工作表','原表行','SKU','品名','原类目','确认后的类目','建议类目（需确认）','结果','候选模板','模板版本','依据','下一步']];
-  for(const r of report.items)rows.push([report.shop,report.marketplace,report.sheet,r.row,r.sku,r.title,r.original_category,r.confirmed?r.category:'',r.suggested_category,statusLabels[r.status],r.template?.filename||'',r.template?.version||'',r.evidence,r.action]);
+  const rows=[['店铺','站点','商品类别','匹配状态','对应模板','模板版本']];
+  for(const group of categoryResults(report))rows.push([report.shop,report.marketplace,group.category,statusLabels[group.status],group.template?.filename||'',group.template?.version||'']);
   const csv=rows.map(row=>row.map(value=>{let s=String(value??'');if(/^[\s]*[=+\-@]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';}).join(',')).join('\r\n');
   const url=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download='模板补充清单-'+report.marketplace+'.csv';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 });
@@ -336,3 +350,6 @@ $('shop-roster-form').addEventListener('submit',async e=>{
     inventoryAICache={};resetInventory(false);await load();await loadShopEditor();notify('店铺已保存');
   }catch(e){$('shop-roster-status').textContent=e.message;notify(e.message,true);}finally{b.disabled=false;}
 });
+
+function setInventoryStep(step){for(const item of document.querySelectorAll('.inventory-flow li')){const value=Number(item.dataset.step);item.classList.toggle('current',value===step);item.classList.toggle('complete',value<step);if(value===step)item.setAttribute('aria-current','step');else item.removeAttribute('aria-current');}}
+$('inventory-use-ai').addEventListener('change',()=>{$('ai-advanced').open=$('inventory-use-ai').checked;});

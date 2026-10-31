@@ -249,6 +249,8 @@ def summarize(report):
     records = report['items']
     groups = {}
     for record in records:
+        category = record['suggested_category'] or '无法识别类目'
+        record['category_key'] = canonical_category(category) or category
         key = (record['status'], record['suggested_category'] or '无法识别类目', (record.get('template') or {}).get('id'))
         group = groups.setdefault(key, {'status': key[0], 'category': key[1], 'count': 0, 'template': record.get('template'), 'rows': []})
         group['count'] += 1

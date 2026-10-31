@@ -139,6 +139,10 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(r['items'][0]['status'], 'review')
         self.assertEqual(r['items'][0]['template']['category'], 'phone cases')
 
+    def test_category_key_merges_chinese_english_luggage_labels(self):
+        r=self.report('SKU,品名,类目\n1,行李箱,行李箱\n2,suitcase,SUITCASE\n3,旅行箱,luggage\n',[template(category='SUITCASE')])
+        self.assertEqual({item['category_key'] for item in r['items']},{'行李箱'})
+
 
 if __name__ == '__main__':
     unittest.main()
