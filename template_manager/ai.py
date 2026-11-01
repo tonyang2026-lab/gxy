@@ -1,11 +1,16 @@
 """Optional OpenAI-compatible model adapters. Keys stay in process memory or env."""
 import base64
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
 import posixpath
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -83,6 +88,32 @@ class Selection:
     def connection(self):return self.values
 
 
+class ResultCache:
+    """Bounded, process-only cache. Keys contain hashes, values only model answers."""
+    def __init__(self, capacity=2000, ttl=1800):
+        self.capacity, self.ttl = capacity, ttl
+        self.entries = OrderedDict()
+        self.lock = threading.Lock()
+
+    def get(self, key):
+        with self.lock:
+            found = self.entries.get(key)
+            if found is None:
+                return None
+            if found[0] <= time.monotonic():
+                del self.entries[key]
+                return None
+            self.entries.move_to_end(key)
+            return deepcopy(found[1])
+
+    def put(self, key, answer):
+        with self.lock:
+            self.entries[key] = (time.monotonic() + self.ttl, deepcopy(answer))
+            self.entries.move_to_end(key)
+            while len(self.entries) > self.capacity:
+                self.entries.popitem(last=False)
+
+
 def resolve(part, target):
     path = posixpath.normpath(target.lstrip('/') if target.startswith('/') else posixpath.join(posixpath.dirname(part), target))
     if not path.startswith('xl/') or '..' in path.split('/'):
@@ -111,8 +142,12 @@ def images_for_rows(data, filename, sheet_name, rows):
             return images, warnings
         sheet_xml = xml(z.read(sheet_path))
         rels = relations(z, sheet_path)
+        payloads = {}
         def attach(row, target):
             if row not in rows or row in images or not target:
+                return
+            if target in payloads:
+                images[row] = payloads[target]
                 return
             if z.getinfo(target).file_size > 2 * 1024 * 1024:
                 warnings.append(f'第 {row} 行图片超过 2 MB，本次只分析文字')
@@ -122,7 +157,8 @@ def images_for_rows(data, filename, sheet_name, rows):
             if not mime:
                 warnings.append(f'第 {row} 行图片格式不受支持，仅支持 PNG/JPEG')
                 return
-            images[row] = {'mime': mime, 'data': base64.b64encode(raw).decode()}
+            payloads[target] = {'mime': mime, 'data': base64.b64encode(raw).decode()}
+            images[row] = payloads[target]
         for drawing in sheet_xml.findall('s:drawing', NS):
             drawing_path = rels.get(drawing.get(R))
             if not drawing_path:
@@ -240,8 +276,9 @@ def probe(settings):
     return {'ok':True,'provider':provider,'model':model,'endpoint':endpoint,'message':'模型调用和分类结果格式检查通过；本次未测试实际商品图片。'}
 
 
-def enrich(report, tables, templates, data, filename, settings, include_images=False, limit=30):
-    from .inventory import header_info
+def enrich(report, tables, templates, data, filename, settings, include_images=False, limit=30,
+           cache=None, cache_scope='', progress=None):
+    from .inventory import header_info, summarize
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError('每次 AI 分析商品数须在 1–500 之间')
     settings = Selection(settings)
@@ -251,45 +288,125 @@ def enrich(report, tables, templates, data, filename, settings, include_images=F
     provider, model, _ = settings.snapshot()
     if include_images and not PROVIDERS[provider]['vision']:
         raise ValueError('当前服务商配置不支持图片，请关闭图片分析或切换视觉模型')
+    successes = failed = cached = calls = images_sent = 0
+    def emit(stage='ai'):
+        if progress:
+            progress({'stage': stage, 'total': len(selected), 'completed': successes,
+                      'cached': cached, 'calls': calls})
+    emit('images' if include_images else 'prepare')
     rows = {r['row'] for r in selected}
-    images, warnings = images_for_rows(data, filename, report['sheet'], rows) if include_images else ({}, [])
+    images, warnings = images_for_rows(data, filename, report['sheet'], rows) if include_images and rows else ({}, [])
     report['warnings'].extend(warnings)
     if include_images:
-        report['warnings'].append(f'本次为 {len(images)} 行附带可读取的图片；其余行只发送文字。支持标准 Excel Drawing 和可解析的 WPS DISPIMG；不自动下载外部图片链接。')
+        report['warnings'].append(f'读取到 {len(images)} 行可用图片；仅需调用 AI 的不同商品发送图片，重复行复用结果。支持 Excel Drawing 和 WPS DISPIMG；不下载外部图片链接。')
     table = next(t for t in tables if t['name'] == report['sheet'])
     _, headers, _ = header_info(table, report['header_row'])
     source_rows = dict(table['rows'])
-    same_site = [t for t in templates if t['marketplace'] == report['marketplace'] and t.get('shop', GLOBAL_SHOP) in (report.get('shop', GLOBAL_SHOP), GLOBAL_SHOP) and not t.get('account_scope_unknown')]
-    # Bound the prompt instead of silently dropping library templates.
+    scoped = [t for t in templates if t['marketplace'] == report['marketplace'] and t.get('shop', GLOBAL_SHOP) in (report.get('shop', GLOBAL_SHOP), GLOBAL_SHOP) and not t.get('account_scope_unknown')]
+    # Give the model only the newest version of each registered shop/category.
+    latest = {}
+    for t in sorted(scoped, key=lambda t: (t.get('created_at', ''), t['id']), reverse=True):
+        latest.setdefault((t.get('shop', GLOBAL_SHOP), t['category']), t)
+    same_site = sorted(latest.values(), key=lambda t: t['id'])
     if len(same_site) > 300:
-        raise ValueError('当前站点模板超过 300 份，请先整理版本；本次 AI 尚未调用')
+        raise ValueError('当前站点不同店铺/类别模板超过 300 份，请先缩小模板范围；本次 AI 尚未调用')
     catalog = [{'id': t['id'], 'category': t['category'], 'filename': t['original_name'], 'version': t['version'], 'shop': t.get('shop', GLOBAL_SHOP)} for t in same_site]
-    successes, failed = 0, 0
-    for start in range(0, len(selected), 5):
-        batch = selected[start:start+5]
-        products = []
-        for r in batch:
-            context, _ = descriptive_context(headers, source_rows[r['row']], r['title'])
-            products.append({'row': r['row'], 'sku': r['sku'], 'name': r['title'], 'category_in_source': r['original_category'], 'description': context[:6000], 'image_attached': r['row'] in images})
-        try:
-            answers = classify(settings, products, catalog, images)
-        except ValueError as e:
-            failed += len(batch)
-            report['warnings'].append(str(e))
-            # Do not repeat failed authentication/network calls for subsequent batches.
-            break
-        for r in batch:
-            answer = answers[r['row']]
-            candidate = next((t for t in same_site if t['id'] == answer.get('template_id')), None)
-            r['ai'] = {'category': answer['category'], 'confidence': answer['confidence'], 'evidence': answer['evidence'], 'image_attached': r['row'] in images, 'provider': provider, 'model': model}
+    candidates = {t['id']: t for t in same_site}
+    def fingerprint(value):
+        return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    # Changing member, credentials, model, region, target shop/site or catalog invalidates cache hits.
+    namespace = fingerprint([cache_scope, settings.connection(), report.get('shop'), report['marketplace'], catalog])
+    groups = {}
+    image_fingerprints = {}
+    for r in selected:
+        context, _ = descriptive_context(headers, source_rows[r['row']], r['title'])
+        product = {'row': r['row'], 'sku': r['sku'], 'name': r['title'], 'category_in_source': r['original_category'], 'description': context[:6000], 'image_attached': r['row'] in images}
+        evidence = {k: v for k, v in product.items() if k not in ('row', 'sku')}
+        image = images.get(r['row'])
+        if image is not None and id(image) not in image_fingerprints:
+            image_fingerprints[id(image)] = fingerprint(image)
+        evidence['image'] = image_fingerprints.get(id(image))
+        # SKU remains relevant when no descriptive evidence exists.
+        informative = context.strip().casefold() not in ('', 'unknown', 'n/a', '未知', '不明商品', '商品', '产品', '待识别')
+        if not (informative or r['original_category'].strip() or image is not None):
+            evidence['sku'] = r['sku']
+        key = fingerprint([namespace, evidence])
+        group = groups.setdefault(key, {'key': key, 'product': product, 'rows': []})
+        group['rows'].append(r)
+    pending_groups = []
+    def apply_answer(group, answer, source):
+        nonlocal successes, cached
+        candidate = candidates.get(answer.get('template_id'))
+        for index, r in enumerate(group['rows']):
+            reused = source == 'cache' or index > 0
+            r['ai'] = {'category': answer['category'], 'confidence': answer['confidence'], 'evidence': answer['evidence'], 'image_attached': r['row'] in images, 'provider': provider, 'model': model, 'source': 'cache' if source == 'cache' else 'duplicate' if index else 'api'}
             r['status'] = 'review'
             r['suggested_category'] = answer['category'] or r['suggested_category']
             r['template'] = {'id': candidate['id'], 'filename': candidate['original_name'], 'category': candidate['category'], 'version': candidate['version'], 'shop': candidate.get('shop', GLOBAL_SHOP)} if candidate else None
-            r['evidence'] = f"AI 建议（{answer['confidence']}；{'附带图片' if r['row'] in images else '仅文字'}）：{answer['evidence']}"
+            r['evidence'] = f"AI 建议（{answer['confidence']}；{'复用相同资料的识别结果' if reused else '附带图片' if r['row'] in images else '仅文字'}）：{answer['evidence']}"
             r['action'] = '请确认 AI 建议的实物类目和候选模板适用范围；没有候选模板不等于确定缺少'
             successes += 1
-    from .inventory import summarize
+            if source == 'cache':
+                cached += 1
+    for group in groups.values():
+        answer = cache.get(group['key']) if cache is not None else None
+        if answer is not None:
+            apply_answer(group, answer, 'cache')
+        else:
+            pending_groups.append(group)
+    batches = [pending_groups[i:i+5] for i in range(0, len(pending_groups), 5)]
+    def submit_batch(batch):
+        products = [g['product'] for g in batch]
+        batch_images = {p['row']: images[p['row']] for p in products if p['row'] in images}
+        return classify(settings, products, catalog, batch_images)
+    def collect(batch, future=None):
+        nonlocal failed
+        try:
+            answers = future.result() if future is not None else submit_batch(batch)
+        except ValueError as e:
+            failed += sum(len(g['rows']) for g in batch)
+            if str(e) not in report['warnings']:
+                report['warnings'].append(str(e))
+            emit()
+            return False
+        for group in batch:
+            answer = answers[group['product']['row']]
+            apply_answer(group, answer, 'api')
+            if cache is not None:
+                cache.put(group['key'], answer)
+        emit()
+        return True
+    def count_call(batch):
+        nonlocal calls, images_sent
+        calls += 1
+        images_sent += sum(g['product']['row'] in images for g in batch)
+        emit()
+    emit()
+    # Validate the first real batch before allowing parallel paid requests.
+    if batches:
+        count_call(batches[0])
+        if collect(batches[0]) and len(batches) > 1:
+            with ThreadPoolExecutor(max_workers=3, thread_name_prefix='inventory-ai') as pool:
+                remaining = iter(batches[1:])
+                active = {}
+                stopped = False
+                def fill():
+                    for batch in remaining:
+                        count_call(batch)
+                        active[pool.submit(submit_batch, batch)] = batch
+                        if len(active) >= 3:
+                            break
+                fill()
+                while active:
+                    done, _ = wait(active, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        batch = active.pop(future)
+                        if not collect(batch, future):
+                            stopped = True
+                    if not stopped:
+                        fill()
     summarize(report)
-    report['ai_summary'] = {'provider': provider, 'model': model, 'requested': len(selected), 'completed': successes, 'failed_batch_rows': failed, 'images_attached': len(images), 'limit': limit}
-    report['warnings'].append(f'AI 分析完成 {successes}/{len(selected)} 行；本次上限 {limit} 行，超出或未完成的商品保留本地结果。AI 可能出错，结果不自动变成已确认类目。')
+    report['ai_summary'] = {'provider': provider, 'model': model, 'requested': len(selected), 'completed': successes, 'failed_batch_rows': failed, 'images_attached': len(images), 'images_sent': images_sent, 'limit': limit, 'unique_products': len(groups), 'deduplicated': len(selected)-len(groups), 'cached': cached, 'calls': calls, 'concurrency': 3}
+    report['warnings'].append(f'AI 分析完成 {successes}/{len(selected)} 行；相同资料合并 {len(selected)-len(groups)} 行，缓存复用 {cached} 行，实际调用 {calls} 批、发送 {images_sent} 张图片。未完成商品保留本地结果；AI 结果仍需确认。')
+    emit('complete')
     return report

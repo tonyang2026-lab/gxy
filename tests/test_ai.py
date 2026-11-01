@@ -130,7 +130,7 @@ class AITests(unittest.TestCase):
             ai.enrich(report, inventory.read_tables(data, 'a.csv'), [], data, 'a.csv', self.settings, include_images=True)
 
     def test_500_limit_processes_100_batches_and_keeps_overflow_local(self):
-        data=('SKU,title\n'+''.join(f'{i},unknown\n' for i in range(501))).encode()
+        data=('SKU,title\n'+''.join(f'{i},unknown{i}\n' for i in range(501))).encode()
         report=inventory.analyze(data,'a.csv','AE',[],sheet='CSV')
         def mock_classify(settings,products,templates,images):
             return {p['row']:{'row':p['row'],'category':'测试类目','confidence':'medium','evidence':'模拟分类','template_id':None} for p in products}
@@ -141,6 +141,114 @@ class AITests(unittest.TestCase):
         self.assertNotIn('ai',result['items'][-1])
         with self.assertRaisesRegex(ValueError,'1–500'):
             ai.enrich(report,inventory.read_tables(data,'a.csv'),[],data,'a.csv',self.settings,limit=501)
+
+    @staticmethod
+    def mock_classification(settings, products, templates, images):
+        return {p['row']: {'row': p['row'], 'category': '测试类目', 'confidence': 'medium',
+                          'evidence': '模拟分类', 'template_id': None} for p in products}
+
+    def test_identical_evidence_deduplicates_but_parameters_and_images_do_not(self):
+        data = 'SKU,品名,参数\n1,独特商品,尺寸10\n2,独特商品,尺寸10\n3,独特商品,尺寸20\n4,独特商品,尺寸20\n'.encode()
+        report = inventory.analyze(data, 'a.csv', 'AE', [], sheet='CSV')
+        images = {4: {'mime': 'image/png', 'data': 'different'}}
+        with patch.object(ai, 'classify', side_effect=self.mock_classification) as call, patch.object(ai, 'images_for_rows', return_value=(images, [])):
+            result = ai.enrich(report, inventory.read_tables(data, 'a.csv'), [], data, 'a.csv', self.settings, include_images=True)
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(len(call.call_args.args[1]), 3)
+        self.assertEqual(result['ai_summary']['completed'], 4)
+        self.assertEqual(result['ai_summary']['deduplicated'], 1)
+        self.assertEqual(result['ai_summary']['images_sent'], 1)
+        self.assertEqual(result['items'][1]['ai']['source'], 'duplicate')
+        self.assertTrue(all(r['status'] == 'review' for r in result['items']))
+
+    def test_generic_unknown_titles_do_not_merge_different_skus(self):
+        data = b'SKU,title\nA,unknown\nB,unknown\n'
+        with patch.object(ai, 'classify', side_effect=self.mock_classification) as call:
+            result = ai.enrich(inventory.analyze(data, 'a.csv', 'AE', [], sheet='CSV'), inventory.read_tables(data, 'a.csv'), [], data, 'a.csv', self.settings)
+        self.assertEqual(len(call.call_args.args[1]), 2)
+        self.assertEqual(result['ai_summary']['deduplicated'], 0)
+
+    def test_parallelism_is_bounded_and_first_batch_is_serial(self):
+        import threading
+        data = ('SKU,title\n'+''.join(f'{i},unknown{i}\n' for i in range(30))).encode()
+        gate = threading.Barrier(3, timeout=5)
+        lock = threading.Lock()
+        metrics = {'active': 0, 'peak': 0, 'started': 0}
+        def remote(settings, products, templates, images):
+            with lock:
+                metrics['active'] += 1
+                metrics['started'] += 1
+                number = metrics['started']
+                metrics['peak'] = max(metrics['peak'], metrics['active'])
+            try:
+                if number in (2, 3, 4):
+                    gate.wait()
+                if number == 1:
+                    self.assertEqual(metrics['active'], 1)
+                return self.mock_classification(settings, products, templates, images)
+            finally:
+                with lock:
+                    metrics['active'] -= 1
+        states = []
+        with patch.object(ai, 'classify', side_effect=remote):
+            result = ai.enrich(inventory.analyze(data, 'a.csv', 'AE', [], sheet='CSV'), inventory.read_tables(data, 'a.csv'), [], data, 'a.csv', self.settings, progress=states.append)
+        self.assertEqual(metrics['peak'], 3)
+        self.assertEqual(result['ai_summary']['calls'], 6)
+        self.assertEqual(result['ai_summary']['completed'], 30)
+        self.assertEqual(states[-1]['completed'], 30)
+        self.assertEqual([r['row'] for r in result['items']], list(range(2, 32)))
+
+    def test_failure_after_first_batch_stops_new_work(self):
+        data = ('SKU,title\n'+''.join(f'{i},unknown{i}\n' for i in range(50))).encode()
+        def remote(settings, products, templates, images):
+            if products[0]['row'] != 2:
+                raise ValueError('模拟 HTTP 429')
+            return self.mock_classification(settings, products, templates, images)
+        with patch.object(ai, 'classify', side_effect=remote) as call:
+            result = ai.enrich(inventory.analyze(data, 'a.csv', 'AE', [], sheet='CSV'), inventory.read_tables(data, 'a.csv'), [], data, 'a.csv', self.settings, limit=50)
+        self.assertEqual(call.call_count, 4)
+        self.assertEqual(result['ai_summary']['completed'], 5)
+        self.assertNotIn('ai', result['items'][-1])
+        self.assertEqual(result['warnings'].count('模拟 HTTP 429'), 1)
+
+    def test_cache_is_scoped_to_member_model_credentials_catalog_and_target(self):
+        cache = ai.ResultCache()
+        data = 'SKU,品名\n1,独特商品\n2,独特商品\n'.encode()
+        def run(scope='reader', catalog=None, shop='通用模板'):
+            catalog = catalog or []
+            return ai.enrich(inventory.analyze(data, 'a.csv', 'AE', catalog, sheet='CSV', shop=shop), inventory.read_tables(data, 'a.csv'), catalog, data, 'a.csv', self.settings, cache=cache, cache_scope=scope)
+        with patch.object(ai, 'classify', side_effect=self.mock_classification) as call:
+            self.assertEqual(run()['ai_summary']['cached'], 0)
+            self.assertEqual(run()['ai_summary']['cached'], 2)
+            self.assertEqual(call.call_count, 1)
+            run('other-reader')
+            self.settings.configure('qwen', 'qwen3-vl-plus', 'another-unit-test-key')
+            run()
+            run(catalog=[template()])
+            run(shop='另一个店铺')
+            self.assertEqual(call.call_count, 5)
+        self.assertNotIn('another-unit-test-key', repr(cache.entries))
+        self.assertNotIn('独特商品', repr(cache.entries))
+
+    def test_cache_expiry_and_capacity(self):
+        cache = ai.ResultCache(capacity=2, ttl=10)
+        with patch.object(ai.time, 'monotonic', return_value=1):
+            cache.put('a', {'category': 'A'})
+            cache.put('b', {'category': 'B'})
+            cached = cache.get('a');cached['category'] = 'changed'
+            self.assertEqual(cache.get('a')['category'], 'A')
+            cache.put('c', {'category': 'C'})
+            self.assertIsNone(cache.get('b'))
+        with patch.object(ai.time, 'monotonic', return_value=12):
+            self.assertIsNone(cache.get('a'))
+
+    def test_only_newest_catalog_version_sent_and_public_scope_preserved(self):
+        data = b'SKU,title\n1,unknown\n'
+        old, new = template(version='old', created='2025'), template(version='new', created='2026')
+        foreign = dict(template(category='家具'), shop='其他店铺')
+        with patch.object(ai, 'classify', side_effect=self.mock_classification) as call:
+            ai.enrich(inventory.analyze(data, 'a.csv', 'AE', [old, new, foreign], sheet='CSV', shop='本店'), inventory.read_tables(data, 'a.csv'), [old, new, foreign], data, 'a.csv', self.settings)
+        self.assertEqual([t['id'] for t in call.call_args.args[2]], [new['id']])
 
     def test_http_error_exposes_safe_provider_code_not_key(self):
         error=urllib.error.HTTPError('https://dashscope.aliyuncs.com',404,'not found',{},io.BytesIO(json.dumps({'error':{'code':'ModelNotFound','message':'Unknown model; unit-test-not-a-real-key'}}).encode()))

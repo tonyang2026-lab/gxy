@@ -7,11 +7,13 @@ from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import getpass
+import re
 from http.cookies import SimpleCookie
 from pathlib import Path
 import shutil
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -30,6 +32,36 @@ INVENTORY_MAX_FILE = 100 * 1024 * 1024
 
 def file_limit(path):
     return INVENTORY_MAX_FILE if path in ('/api/inventory/inspect','/api/inventory/analyze') else 32*1024*1024
+
+
+class InventoryProgress:
+    """Small member-scoped progress snapshots; never retain inventory contents."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.jobs = {}
+
+    def start(self, user, job):
+        if not isinstance(job, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', job):
+            raise ValueError('识别任务编号无效')
+        with self.lock:
+            now = time.monotonic()
+            self.jobs = {key: value for key, value in self.jobs.items() if now-value[0] < 3600}
+            key = (user, job)
+            if key in self.jobs:
+                raise ValueError('识别任务已提交，请等待结果')
+            if len(self.jobs) >= 256:
+                del self.jobs[next(iter(self.jobs))]
+            self.jobs[key] = (now, {'stage': 'parse', 'completed': 0, 'total': 0})
+
+    def update(self, user, job, state):
+        with self.lock:
+            if (user, job) in self.jobs:
+                self.jobs[(user, job)] = (time.monotonic(), dict(state))
+
+    def get(self, user, job):
+        with self.lock:
+            found = self.jobs.get((user, job))
+            return dict(found[1]) if found and time.monotonic()-found[0] < 3600 else None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -97,6 +129,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path)
         try:
+            if path.path == '/api/inventory/progress':
+                user = self.identity()
+                if user:
+                    state = self.server.inventory_progress.get(user['username'], parse_qs(path.query).get('job_id', [''])[0])
+                    self.send(state if state is not None else {'stage': 'upload'})
+                return
             with LOCK:
                 if path.path == '/api/me':
                     user = self.identity()
@@ -169,7 +207,8 @@ class Handler(BaseHTTPRequestHandler):
             roles = ('admin',) if self.path in ('/api/users', '/api/restore', '/api/ai/settings', '/api/ai/test', '/api/shops/import', '/api/shops/preview') else ('admin', 'editor')
             if self.path in ('/api/logout', '/api/inventory/inspect', '/api/inventory/analyze', '/api/templates/download'):
                 roles = None
-            if not self.identity(roles):
+            current_user = self.identity(roles)
+            if not current_user:
                 return
             if self.path == '/api/logout':
                 self.server.auth.logout(self.token())
@@ -236,19 +275,33 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(archive, mime='application/zip', filename='同地区多店铺模板-'+report['marketplace']+'.zip', extra_headers={'X-Generated-Count': report['generated'], 'X-Saved-Count': report['saved'], 'X-Reused-Count': report['reused'], 'X-Failed-Count':report['failed']})
                 return
             if self.path == '/api/inventory/analyze':
-                with LOCK:
-                    templates = self.call('list', marketplace=None, category=None)
-                report = inventory.analyze(data, name, body.get('marketplace', ''), templates, body.get('sheet'), body.get('header_row'), body.get('mapping'), body.get('category_overrides'), body.get('shop', library.GLOBAL_SHOP))
-                if body.get('use_ai') is True:
-                    if body.get('ai_consent') is not True:
-                        raise ValueError('请先同意将本次分析涉及的商品资料发送到所选 AI 服务商')
-                    if not self.server.ai_job_lock.acquire(blocking=False):
-                        self.send({'error': '其他成员正在进行 AI 分析，请稍后重试，避免重复产生费用'}, 409)
-                        return
-                    try:
-                        report = ai.enrich(report, inventory.read_tables(data, name), templates, data, name, self.server.ai, body.get('include_images') is True, body.get('ai_limit', 30))
-                    finally:
-                        self.server.ai_job_lock.release()
+                user, job = current_user['username'], body.get('job_id')
+                progress = self.server.inventory_progress
+                if job is not None:
+                    progress.start(user, job)
+                def update(state):
+                    if job is not None:
+                        progress.update(user, job, state)
+                try:
+                    with LOCK:
+                        templates = self.call('list', marketplace=None, category=None)
+                    tables = inventory.read_tables(data, name)
+                    report = inventory.analyze(data, name, body.get('marketplace', ''), templates, body.get('sheet'), body.get('header_row'), body.get('mapping'), body.get('category_overrides'), body.get('shop', library.GLOBAL_SHOP), tables=tables)
+                    if body.get('use_ai') is True:
+                        if body.get('ai_consent') is not True:
+                            raise ValueError('请先同意将本次分析涉及的商品资料发送到所选 AI 服务商')
+                        if not self.server.ai_job_lock.acquire(blocking=False):
+                            update({'stage': 'error'})
+                            self.send({'error': '其他成员正在进行 AI 分析，请稍后重试，避免重复产生费用'}, 409)
+                            return
+                        try:
+                            report = ai.enrich(report, tables, templates, data, name, self.server.ai, body.get('include_images') is True, body.get('ai_limit', 30), cache=self.server.ai_cache if body.get('use_ai_cache') is not False else None, cache_scope=user, progress=update)
+                        finally:
+                            self.server.ai_job_lock.release()
+                    update({'stage': 'done', 'completed': len(report['items']), 'total': len(report['items'])})
+                except Exception:
+                    update({'stage': 'error'})
+                    raise
                 self.send(report)
                 return
             with LOCK, tempfile.TemporaryDirectory() as d:
@@ -292,6 +345,8 @@ def create_server(data_dir, port=8765, host='127.0.0.1', allowed_hosts=None, sch
     server.auth = Auth(data_dir.parent / 'accounts.sqlite3')
     server.ai = ai.Settings(data_dir.parent / 'ai-config.json')
     server.ai_job_lock = threading.Lock()
+    server.ai_cache = ai.ResultCache()
+    server.inventory_progress = InventoryProgress()
     server.allowed_hosts = set(allowed_hosts or [f'127.0.0.1:{server.server_port}', f'localhost:{server.server_port}'])
     server.scheme = scheme
     return server

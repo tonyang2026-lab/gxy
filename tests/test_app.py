@@ -114,6 +114,59 @@ class SharedLibraryTest(unittest.TestCase):
         self.assertEqual(status, 200, raw)
         self.assertEqual(json.loads(raw)['summary']['missing'], 1)
 
+    def test_inventory_progress_remains_readable_during_ai_and_cache_can_be_disabled(self):
+        from template_manager import ai
+        reader, writer = self.login('reader'), self.login('writer')
+        self.server.ai.configure('qwen', 'qwen3-vl-plus', 'unit-test-not-a-real-key')
+        payload = {'filename': 'stock.csv', 'data': base64.b64encode('SKU,品名\nA,进度专用商品\nB,进度专用商品\n'.encode()).decode(), 'marketplace': 'AE', 'sheet': 'CSV', 'job_id': 'live-progress', 'use_ai': True, 'ai_consent': True}
+        entered, release = threading.Event(), threading.Event()
+        def remote(settings, products, templates, images):
+            entered.set()
+            if not release.wait(5):
+                raise ValueError('测试等待超时')
+            return {p['row']: {'row': p['row'], 'category': '测试建议', 'confidence': 'low', 'evidence': '模拟进度', 'template_id': None} for p in products}
+        responses = []
+        with patch.object(ai, 'classify', side_effect=remote) as call:
+            worker = threading.Thread(target=lambda: responses.append(self.req('POST', '/api/inventory/analyze', payload, reader)))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                own = json.loads(self.req('GET', '/api/inventory/progress?job_id=live-progress', cookie=reader)[1])
+                other = json.loads(self.req('GET', '/api/inventory/progress?job_id=live-progress', cookie=writer)[1])
+                self.assertEqual(own['stage'], 'ai')
+                self.assertEqual(own['total'], 2)
+                self.assertEqual(other, {'stage': 'upload'})
+                self.assertTrue(worker.is_alive())
+            finally:
+                release.set();worker.join(5)
+            self.assertEqual(responses[0][0], 200, responses)
+            payload['job_id'] = 'live-progress-cached'
+            status, raw, _ = self.req('POST', '/api/inventory/analyze', payload, reader)
+            self.assertEqual(status, 200, raw)
+            self.assertEqual(json.loads(raw)['ai_summary']['cached'], 2)
+            self.assertEqual(call.call_count, 1)
+            payload.update(job_id='live-progress-fresh', use_ai_cache=False)
+            status, raw, _ = self.req('POST', '/api/inventory/analyze', payload, reader)
+            self.assertEqual(status, 200, raw)
+            self.assertEqual(json.loads(raw)['ai_summary']['cached'], 0)
+            self.assertEqual(call.call_count, 2)
+
+    def test_inventory_parsed_once_and_progress_is_member_scoped(self):
+        from template_manager import inventory
+        reader, writer = self.login('reader'), self.login('writer')
+        payload = {'filename': 'stock.csv', 'data': base64.b64encode(b'SKU,title\nA,unknown-progress\n').decode(), 'marketplace': 'AE', 'sheet': 'CSV', 'job_id': 'progress-unit-test'}
+        self.assertEqual(self.req('GET', '/api/inventory/progress?job_id=progress-unit-test')[0], 401)
+        with patch.object(inventory, 'read_tables', wraps=inventory.read_tables) as read:
+            status, raw, _ = self.req('POST', '/api/inventory/analyze', payload, reader)
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(read.call_count, 1)
+        own = json.loads(self.req('GET', '/api/inventory/progress?job_id=progress-unit-test', cookie=reader)[1])
+        other = json.loads(self.req('GET', '/api/inventory/progress?job_id=progress-unit-test', cookie=writer)[1])
+        self.assertEqual(own['stage'], 'done')
+        self.assertEqual(other, {'stage': 'upload'})
+        self.assertNotIn('unknown-progress', json.dumps(own))
+        self.assertEqual(self.req('POST', '/api/inventory/analyze', payload, reader)[0], 400)
+
     def test_static_ui(self):
         for path in ('/', '/style.css', '/app.js'):
             self.assertEqual(self.req('GET', path)[0], 200)

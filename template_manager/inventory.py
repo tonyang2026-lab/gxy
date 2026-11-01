@@ -269,13 +269,13 @@ def summarize(report):
     return report
 
 
-def analyze(data, filename, marketplace, templates, sheet=None, header_row=None, mapping=None, category_overrides=None, shop=GLOBAL_SHOP):
+def analyze(data, filename, marketplace, templates, sheet=None, header_row=None, mapping=None, category_overrides=None, shop=GLOBAL_SHOP, tables=None):
     if not re.fullmatch('[A-Z]{2}', marketplace or ''):
         raise ValueError('请明确选择目标站点，不能从商品语言推测站点')
     if not isinstance(shop, str) or not shop.strip() or len(shop) > 120:
         raise ValueError('请明确选择店铺，店铺名称最多 120 字')
     shop = shop.strip()
-    tables = read_tables(data, filename)
+    tables = read_tables(data, filename) if tables is None else tables
     table = next((t for t in tables if t['name'] == sheet), None)
     if table is None:
         raise ValueError('请先读取表头并明确选择工作表')
