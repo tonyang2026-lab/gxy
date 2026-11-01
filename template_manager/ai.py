@@ -19,6 +19,10 @@ PROVIDERS = {
     'openai': {'name': 'OpenAI', 'url': 'https://api.openai.com/v1/chat/completions', 'model': 'gpt-4.1-mini', 'vision': True, 'env': 'OPENAI_API_KEY'},
     'deepseek': {'name': 'DeepSeek', 'url': 'https://api.deepseek.com/chat/completions', 'model': 'deepseek-chat', 'vision': False, 'env': 'DEEPSEEK_API_KEY'},
 }
+QWEN_REGIONS={
+    'cn':{'name':'中国内地（北京）','url':'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'},
+    'intl':{'name':'国际（新加坡）','url':'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions'},
+}
 
 
 class Settings:
@@ -27,45 +31,56 @@ class Settings:
         self.lock = threading.Lock()
         self.key = ''
         self.provider = 'qwen'
+        self.region='cn'
         self.model = PROVIDERS[self.provider]['model']
         if self.path.exists():
             saved = json.loads(self.path.read_text())
             if saved.get('provider') in PROVIDERS:
                 self.provider = saved['provider']
                 self.model = saved.get('model') or PROVIDERS[self.provider]['model']
+                self.region=saved.get('region','cn') if saved.get('region','cn') in QWEN_REGIONS else 'cn'
 
     def snapshot(self):
+        return self.connection()[:3]
+
+    def connection(self):
         with self.lock:
             provider = PROVIDERS[self.provider]
             key = self.key or os.environ.get('TEMPLATE_AI_API_KEY') or os.environ.get(provider['env'], '')
-            return self.provider, self.model, key
+            endpoint=QWEN_REGIONS[self.region]['url'] if self.provider=='qwen' else provider['url']
+            return self.provider, self.model, key,endpoint
 
     def public(self):
         provider, model, key = self.snapshot()
-        return {'provider': provider, 'model': model, 'configured': bool(key), 'vision': PROVIDERS[provider]['vision'], 'providers': {k: {'name': v['name'], 'model': v['model'], 'vision': v['vision']} for k, v in PROVIDERS.items()}}
+        return {'provider': provider, 'model': model, 'region':self.region,'qwen_regions':{key:value['name'] for key,value in QWEN_REGIONS.items()},'configured': bool(key), 'vision': PROVIDERS[provider]['vision'], 'providers': {k: {'name': v['name'], 'model': v['model'], 'vision': v['vision']} for k, v in PROVIDERS.items()}}
 
-    def configure(self, provider, model, key):
+    def configure(self, provider, model, key,region=None):
         if provider not in PROVIDERS or not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9_.:/-]{1,100}', model):
             raise ValueError('服务商或模型名称无效')
         if not isinstance(key, str) or len(key) > 1024 or any(c.isspace() for c in key):
             raise ValueError('API 密钥格式无效')
+        if region is not None and region not in QWEN_REGIONS:raise ValueError('千问服务区域无效')
         with self.lock:
-            if self.provider != provider:
+            selected_region=region or self.region
+            if self.provider != provider or (provider=='qwen' and selected_region!=self.region):
                 self.key = ''
             self.provider, self.model = provider, model
+            self.region=selected_region
             if key:
                 self.key = key
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps({'provider': provider, 'model': model}))
+            self.path.write_text(json.dumps({'provider': provider, 'model': model,'region':self.region}))
 
 
 class Selection:
     """Keep a running job on the originally selected provider/model/key."""
     def __init__(self, settings):
-        self.values = settings.snapshot()
+        self.values = settings.connection()
 
     def snapshot(self):
-        return self.values
+        return self.values[:3]
+
+    def connection(self):return self.values
 
 
 def resolve(part, target):
@@ -151,7 +166,7 @@ def images_for_rows(data, filename, sheet_name, rows):
 
 
 def classify(settings, products, templates, images):
-    provider_id, model, key = settings.snapshot()
+    provider_id, model, key,endpoint = settings.connection()
     if not key:
         raise ValueError('AI 尚未配置 API 密钥，请管理员先在软件中配置')
     provider = PROVIDERS[provider_id]
@@ -171,14 +186,25 @@ def classify(settings, products, templates, images):
                 image = images[row]
                 content.extend([{'type': 'text', 'text': f'以下图片属于库存表第 {row} 行'}, {'type': 'image_url', 'image_url': {'url': 'data:'+image['mime']+';base64,'+image['data']}}])
     payload = {'model': model, 'temperature': 0, 'max_tokens': 3000, 'response_format': {'type': 'json_object'}, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': content if provider['vision'] else text}]}
-    request = urllib.request.Request(provider['url'], data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', 'Authorization': 'Bearer '+key}, method='POST')
+    request = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', 'Authorization': 'Bearer '+key}, method='POST')
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             raw = response.read(2 * 1024 * 1024 + 1)
             if len(raw) > 2 * 1024 * 1024:
                 raise ValueError('AI 响应过大')
     except urllib.error.HTTPError as e:
-        raise ValueError(f"{provider['name']} 请求失败（HTTP {e.code}），请检查密钥、模型权限、额度和服务地址；未返回密钥或远端错误正文") from None
+        try:
+            decoded=json.loads(e.read(65536));error=decoded.get('error',decoded)
+            if not isinstance(error,dict):error={}
+            code=str(error.get('code') or error.get('type') or '未提供错误码')
+            message=str(error.get('message') or '未提供错误说明')
+        except (ValueError,TypeError,AttributeError,OSError):code='非 JSON 响应';message='服务或中间网关没有返回结构化错误'
+        def redact(value):
+            value=value.replace(key,'[密钥已隐藏]')
+            value=re.sub(r'(?i)Bearer\s+[^\s"<>]+','Bearer [已隐藏]',value)
+            value=re.sub(r'\bsk-[A-Za-z0-9_-]{8,}','[密钥已隐藏]',value)
+            return re.sub(r'[\x00-\x1f\x7f]',' ',value)[:500]
+        raise ValueError(f"{provider['name']} 请求失败（HTTP {e.code}）；错误码：{redact(code)}；说明：{redact(message)}；模型：{redact(model)}；接口：{endpoint}。请按错误码核对区域、模型可用性和权限。") from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise ValueError('AI 服务连接失败或超时，请检查服务器网络；未分析的行仍保留待确认') from None
     try:
@@ -205,6 +231,13 @@ def classify(settings, products, templates, images):
     if set(accepted) != allowed_rows:
         raise ValueError('AI 漏回了商品行，结果已拒绝；未把遗漏商品当成已识别')
     return accepted
+
+
+def probe(settings):
+    selected=Selection(settings)
+    classify(selected,[{'row':1,'name':'连接测试，无实际商品资料'}],[],{})
+    provider,model,_,endpoint=selected.connection()
+    return {'ok':True,'provider':provider,'model':model,'endpoint':endpoint,'message':'模型调用和分类结果格式检查通过；本次未测试实际商品图片。'}
 
 
 def enrich(report, tables, templates, data, filename, settings, include_images=False, limit=30):

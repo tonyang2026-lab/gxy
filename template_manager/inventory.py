@@ -176,6 +176,13 @@ def header_info(table, header_row=None):
     return position, headers, mapping_for(headers)
 
 
+def header_warnings(headers,mapping):
+    selected=[headers[i] for field,i in mapping.items() if field in ('title','category') and type(i) is int and 0<=i<len(headers)]
+    if any(re.fullmatch(r'\d+(?:\.\d+)?',str(value).strip()) for value in selected) or sum(bool(re.fullmatch(r'\d+(?:\.\d+)?',str(value).strip())) for value in headers)>=2:
+        return ['当前表头含“1”“2”等数字，可能选到了商品数据行。请展开列设置，把表头行改为实际包含 SKU、品名、类别等列名的那一行，再核对映射。']
+    return []
+
+
 def inspect(data, filename, sheet=None, header_row=None):
     tables = read_tables(data, filename)
     nonempty = [t for t in tables if t['rows']]
@@ -185,7 +192,7 @@ def inspect(data, filename, sheet=None, header_row=None):
     if selected is None:
         raise ValueError('工作表不存在或为空')
     pos, headers, mapping = header_info(selected, header_row)
-    return {'sheet': selected['name'], 'sheets': [{'name': t['name'], 'rows': len(t['rows'])} for t in nonempty], 'header_row': selected['rows'][pos][0], 'headers': headers, 'mapping': mapping, 'preview': [r[1] for r in selected['rows'][pos + 1:pos + 4]], 'warnings': selected['warnings']}
+    return {'sheet': selected['name'], 'sheets': [{'name': t['name'], 'rows': len(t['rows'])} for t in nonempty], 'header_row': selected['rows'][pos][0], 'headers': headers, 'mapping': mapping, 'preview': [r[1] for r in selected['rows'][pos + 1:pos + 4]], 'warnings': selected['warnings']+header_warnings(headers,mapping)}
 
 
 def hits(text):
@@ -347,4 +354,4 @@ def analyze(data, filename, marketplace, templates, sheet=None, header_row=None,
         group['rows'].append(row_number)
     if not records:
         raise ValueError('表头之后没有可分析的商品行，请检查列映射和表头行号')
-    return summarize({'filename': filename, 'marketplace': marketplace, 'shop': shop, 'sheet': sheet, 'header_row': table['rows'][pos][0], 'items': records, 'warnings': table['warnings'] + ['结果只检查模板覆盖，不检查商品资料。类目匹配依据库内登记信息，不代表亚马逊官方类目审核；同名模板仍需核对适用范围。', '缺少模板指无同店铺/通用、同站点同登记类目，可能存在不同命名；品名/属性推断只供确认，不自动判定缺失。', '本地规则不读取图片；开启 AI 图片分析后才读取支持格式的内嵌图片。', '库存文件仅在本次请求内分析，不存入共享模板库。']})
+    return summarize({'filename': filename, 'marketplace': marketplace, 'shop': shop, 'sheet': sheet, 'header_row': table['rows'][pos][0], 'items': records, 'warnings': table['warnings'] + header_warnings(headers,cols) + ['结果只检查模板覆盖，不检查商品资料。类目匹配依据库内登记信息，不代表亚马逊官方类目审核；同名模板仍需核对适用范围。', '缺少模板指无同店铺/通用、同站点同登记类目，可能存在不同命名；品名/属性推断只供确认，不自动判定缺失。', '本地规则不读取图片；开启 AI 图片分析后才读取支持格式的内嵌图片。', '库存文件仅在本次请求内分析，不存入共享模板库。']})

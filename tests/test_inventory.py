@@ -143,6 +143,10 @@ class InventoryTests(unittest.TestCase):
         r=self.report('SKU,品名,类目\n1,行李箱,行李箱\n2,suitcase,SUITCASE\n3,旅行箱,luggage\n',[template(category='SUITCASE')])
         self.assertEqual({item['category_key'] for item in r['items']},{'行李箱'})
 
+    def test_numeric_header_mapping_warns_about_wrong_header_row(self):
+        r=self.report('SKU,1,2\nA,手机壳,手机壳\n',mapping={'sku':0,'title':1,'category':2})
+        self.assertTrue(any('当前表头' in warning for warning in r['warnings']))
+
 
 if __name__ == '__main__':
     unittest.main()

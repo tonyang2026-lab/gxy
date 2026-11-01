@@ -159,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
                 suffix = '; Secure' if self.server.scheme == 'https' else ''
                 self.send({'ok': True}, cookie=f'session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + suffix)
                 return
-            roles = ('admin',) if self.path in ('/api/users', '/api/restore', '/api/ai/settings', '/api/shops/import', '/api/shops/preview') else ('admin', 'editor')
+            roles = ('admin',) if self.path in ('/api/users', '/api/restore', '/api/ai/settings', '/api/ai/test', '/api/shops/import', '/api/shops/preview') else ('admin', 'editor')
             if self.path in ('/api/logout', '/api/inventory/inspect', '/api/inventory/analyze', '/api/templates/download'):
                 roles = None
             if not self.identity(roles):
@@ -176,8 +176,11 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.scheme != 'https' and self.client_address[0] not in ('127.0.0.1', '::1'):
                     self.send({'error': 'HTTP 模式下仅允许在服务器本机配置 API 密钥，请用 127.0.0.1 打开软件'}, 403)
                     return
-                self.server.ai.configure(body.get('provider'), body.get('model'), body.get('api_key', ''))
+                self.server.ai.configure(body.get('provider'), body.get('model'), body.get('api_key', ''),body.get('region'))
                 self.send(self.server.ai.public())
+                return
+            if self.path == '/api/ai/test':
+                self.send(ai.probe(self.server.ai))
                 return
             if self.path == '/api/template-shop':
                 with LOCK:

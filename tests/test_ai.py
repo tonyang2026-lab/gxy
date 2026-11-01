@@ -136,6 +136,27 @@ class AITests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'1–500'):
             ai.enrich(report,inventory.read_tables(data,'a.csv'),[],data,'a.csv',self.settings,limit=501)
 
+    def test_http_error_exposes_safe_provider_code_not_key(self):
+        error=urllib.error.HTTPError('https://dashscope.aliyuncs.com',404,'not found',{},io.BytesIO(json.dumps({'error':{'code':'ModelNotFound','message':'Unknown model; unit-test-not-a-real-key'}}).encode()))
+        with patch('urllib.request.urlopen',side_effect=error):
+            with self.assertRaises(ValueError) as caught:ai.classify(self.settings,[{'row':1}],[],{})
+        message=str(caught.exception)
+        self.assertIn('ModelNotFound',message);self.assertIn('HTTP 404',message)
+        self.assertNotIn('unit-test-not-a-real-key',message)
+
+    def test_region_endpoint_and_old_default_preserved(self):
+        self.settings.configure('qwen','qwen-vl-plus','unit-test-not-a-real-key',region='intl')
+        with patch('urllib.request.urlopen',return_value=response([{'row':1,'category':'测试','confidence':'low','evidence':'模拟','template_id':None}])) as remote:
+            ai.classify(self.settings,[{'row':1}],[],{})
+        self.assertIn('dashscope-intl.aliyuncs.com',remote.call_args.args[0].full_url)
+        self.assertEqual(ai.Settings(self.settings.path).public()['region'],'intl')
+
+    def test_probe_calls_once_and_returns_no_key(self):
+        with patch('urllib.request.urlopen',return_value=response([{'row':1,'category':'测试','confidence':'low','evidence':'模拟','template_id':None}])) as remote:
+            result=ai.probe(self.settings)
+        self.assertTrue(result['ok']);self.assertEqual(remote.call_count,1)
+        self.assertNotIn('unit-test-not-a-real-key',json.dumps(result))
+
 
 if __name__ == '__main__':
     unittest.main()

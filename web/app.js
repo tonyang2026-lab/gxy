@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const UI_REVISION='AI 500件版 1031.3';
+const UI_REVISION='千问诊断版 1101.1';
 ensureInventoryShopPicker();
 let templates = [];
 let inventoryShopNames=[];
@@ -162,7 +162,7 @@ async function inspectInventory(reuseSelection=false) {
       info.headers.forEach((h,i)=>select.add(new Option('第 '+(i+1)+' 列 · '+(h||'空表头'),String(i))));
       select.value=info.mapping[field]===null?'':String(info.mapping[field]);
     }
-    $('inventory-mapping').hidden=false;setInventoryStep(2);$('column-settings').open=info.mapping.title===null&&info.mapping.category===null;
+    $('inventory-mapping').hidden=false;setInventoryStep(2);$('column-settings').open=(info.mapping.title===null&&info.mapping.category===null)||info.warnings.some(w=>w.includes('当前表头'));
     $('inventory-preview').textContent='表头已识别，请核对工作表、表头行号及列映射'+(info.warnings.length?'；'+info.warnings.join('；'):'');
     notify('表头已读取，请核对工作表、表头行和列映射');
   }catch(e){notify(e.message,true);}finally{busy=false;}
@@ -260,15 +260,15 @@ $('logout').addEventListener('click',()=>{$('inventory-file').value='';$('ai-key
 
 async function loadAISettings(){
   const info=await request('/api/ai/settings');window.currentAI=info;
-  $('ai-provider').value=info.provider;$('ai-model').value=info.model;
+  $('ai-provider').value=info.provider;$('ai-model').value=info.model;$('ai-region').value=info.region||'cn';$('ai-region-label').hidden=info.provider!=='qwen';
   $('ai-state').textContent=info.configured?'已配置 · '+info.providers[info.provider].name:'尚未配置 API 密钥';
   $('ai-ready-label').textContent='（'+info.providers[info.provider].name+' / '+info.model+' · '+(info.configured?'已配置':'待配置')+'）';
   $('inventory-images').disabled=!info.vision;if(!info.vision)$('inventory-images').checked=false;
 }
-$('ai-provider').addEventListener('change',()=>{const models={qwen:'qwen-vl-plus',openai:'gpt-4.1-mini',deepseek:'deepseek-chat'};$('ai-model').value=models[$('ai-provider').value];$('ai-key').value='';});
+$('ai-provider').addEventListener('change',()=>{const models={qwen:'qwen-vl-plus',openai:'gpt-4.1-mini',deepseek:'deepseek-chat'};$('ai-model').value=models[$('ai-provider').value];$('ai-key').value='';$('ai-region-label').hidden=$('ai-provider').value!=='qwen';});
 $('ai-settings-form').addEventListener('submit',async e=>{
   e.preventDefault();const b=e.submitter;b.disabled=true;
-  try{await postJSON('/api/ai/settings',{provider:$('ai-provider').value,model:$('ai-model').value,api_key:$('ai-key').value.trim()});$('ai-key').value='';await loadAISettings();notify('AI 配置已更新；请在库存分析中按需开启');}catch(err){notify(err.message,true);}finally{b.disabled=false;}
+  try{await postJSON('/api/ai/settings',{provider:$('ai-provider').value,model:$('ai-model').value,api_key:$('ai-key').value.trim(),region:$('ai-region').value});$('ai-key').value='';await loadAISettings();notify('AI 配置已更新；请在库存分析中按需开启');}catch(err){notify(err.message,true);}finally{b.disabled=false;}
 });
 
 function reuseAISuggestions(report){
@@ -419,3 +419,6 @@ $('download-inventory-templates').addEventListener('click',async()=>{
 });
 
 $('inventory-ai-limit').max='500';$('inventory-ai-limit').value='500';
+
+$('ai-region').addEventListener('change',()=>{$('ai-key').value='';$('ai-test-result').textContent='区域切换后，请填写该区域的 API 密钥并保存，再测试连接。';});
+$('ai-test').addEventListener('click',async()=>{const button=$('ai-test');button.disabled=true;$('ai-test-result').textContent='正在测试已保存的模型配置…';try{const result=await postJSON('/api/ai/test',{});$('ai-test-result').textContent=result.message+' 模型：'+result.model+'；接口：'+result.endpoint;}catch(e){$('ai-test-result').textContent=e.message;notify(e.message,true);}finally{button.disabled=false;}});
