@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const UI_REVISION='千问诊断版 1101.1';
+const UI_REVISION='千问模型修复版 1101.2';
 ensureInventoryShopPicker();
 let templates = [];
 let inventoryShopNames=[];
@@ -263,9 +263,10 @@ async function loadAISettings(){
   $('ai-provider').value=info.provider;$('ai-model').value=info.model;$('ai-region').value=info.region||'cn';$('ai-region-label').hidden=info.provider!=='qwen';
   $('ai-state').textContent=info.configured?'已配置 · '+info.providers[info.provider].name:'尚未配置 API 密钥';
   $('ai-ready-label').textContent='（'+info.providers[info.provider].name+' / '+info.model+' · '+(info.configured?'已配置':'待配置')+'）';
+  if($('ai-model-help'))$('ai-model-help').textContent='推荐模型：'+info.providers[info.provider].model+'。已有保存配置不会自动替换，修改后请保存并测试。';
   $('inventory-images').disabled=!info.vision;if(!info.vision)$('inventory-images').checked=false;
 }
-$('ai-provider').addEventListener('change',()=>{const models={qwen:'qwen-vl-plus',openai:'gpt-4.1-mini',deepseek:'deepseek-chat'};$('ai-model').value=models[$('ai-provider').value];$('ai-key').value='';$('ai-region-label').hidden=$('ai-provider').value!=='qwen';});
+$('ai-provider').addEventListener('change',()=>{const models={qwen:'qwen3-vl-plus',openai:'gpt-4.1-mini',deepseek:'deepseek-chat'};$('ai-model').value=models[$('ai-provider').value];$('ai-key').value='';$('ai-region-label').hidden=$('ai-provider').value!=='qwen';});
 $('ai-settings-form').addEventListener('submit',async e=>{
   e.preventDefault();const b=e.submitter;b.disabled=true;
   try{await postJSON('/api/ai/settings',{provider:$('ai-provider').value,model:$('ai-model').value,api_key:$('ai-key').value.trim(),region:$('ai-region').value});$('ai-key').value='';await loadAISettings();notify('AI 配置已更新；请在库存分析中按需开启');}catch(err){notify(err.message,true);}finally{b.disabled=false;}
@@ -422,3 +423,5 @@ $('inventory-ai-limit').max='500';$('inventory-ai-limit').value='500';
 
 $('ai-region').addEventListener('change',()=>{$('ai-key').value='';$('ai-test-result').textContent='区域切换后，请填写该区域的 API 密钥并保存，再测试连接。';});
 $('ai-test').addEventListener('click',async()=>{const button=$('ai-test');button.disabled=true;$('ai-test-result').textContent='正在测试已保存的模型配置…';try{const result=await postJSON('/api/ai/test',{});$('ai-test-result').textContent=result.message+' 模型：'+result.model+'；接口：'+result.endpoint;}catch(e){$('ai-test-result').textContent=e.message;notify(e.message,true);}finally{button.disabled=false;}});
+
+if($('ai-use-recommended'))$('ai-use-recommended').addEventListener('click',()=>{const provider=$('ai-provider').value;const model=window.currentAI?.providers?.[provider]?.model||({qwen:'qwen3-vl-plus',openai:'gpt-4.1-mini',deepseek:'deepseek-chat'}[provider]);$('ai-model').value=model;notify('已填入 '+model+'，请保存配置后测试模型连接');});

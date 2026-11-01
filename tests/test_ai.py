@@ -48,6 +48,12 @@ class AITests(unittest.TestCase):
         with patch.dict('os.environ', {}, clear=True):
             self.assertFalse(ai.Settings(self.settings.path).public()['configured'])
 
+    def test_qwen3_default_does_not_overwrite_saved_model(self):
+        fresh=ai.Settings(Path(self.tmp.name)/'new-config.json')
+        self.assertEqual(fresh.model,'qwen3-vl-plus')
+        existing=ai.Settings(self.settings.path)
+        self.assertEqual(existing.model,'qwen-vl-plus')
+
     def test_native_picture_row_mapping(self):
         pictures, warnings = ai.images_for_rows(image_book(), 'stock.xlsx', '库存', {2})
         self.assertEqual(list(pictures), [2])

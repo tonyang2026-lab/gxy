@@ -15,7 +15,7 @@ from .inventory import NS, R, xml, descriptive_context
 from .library import GLOBAL_SHOP
 
 PROVIDERS = {
-    'qwen': {'name': '通义千问', 'url': 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', 'model': 'qwen-vl-plus', 'vision': True, 'env': 'DASHSCOPE_API_KEY'},
+    'qwen': {'name': '通义千问', 'url': 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', 'model': 'qwen3-vl-plus', 'vision': True, 'env': 'DASHSCOPE_API_KEY'},
     'openai': {'name': 'OpenAI', 'url': 'https://api.openai.com/v1/chat/completions', 'model': 'gpt-4.1-mini', 'vision': True, 'env': 'OPENAI_API_KEY'},
     'deepseek': {'name': 'DeepSeek', 'url': 'https://api.deepseek.com/chat/completions', 'model': 'deepseek-chat', 'vision': False, 'env': 'DEEPSEEK_API_KEY'},
 }
