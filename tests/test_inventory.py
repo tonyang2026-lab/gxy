@@ -147,6 +147,12 @@ class InventoryTests(unittest.TestCase):
         r=self.report('SKU,1,2\nA,手机壳,手机壳\n',mapping={'sku':0,'title':1,'category':2})
         self.assertTrue(any('当前表头' in warning for warning in r['warnings']))
 
+    def test_ooxml_with_xls_name_can_read_but_biff_requests_real_conversion(self):
+        data=make_book({'库存':[['SKU','品名'],['1','行李箱']]})
+        self.assertEqual(inventory.inspect(data,'export.xls')['sheet'],'库存')
+        with self.assertRaisesRegex(ValueError,'不能只改'):
+            inventory.inspect(b'\xd0\xcf\x11\xe0binary','legacy.xls')
+
 
 if __name__ == '__main__':
     unittest.main()

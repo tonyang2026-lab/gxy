@@ -25,6 +25,11 @@ from template_manager import batch
 WEB = Path(__file__).parent / 'web'
 LOCK = threading.Lock()
 MAX_BODY = 46 * 1024 * 1024
+INVENTORY_MAX_FILE = 100 * 1024 * 1024
+
+
+def file_limit(path):
+    return INVENTORY_MAX_FILE if path in ('/api/inventory/inspect','/api/inventory/analyze') else 32*1024*1024
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -143,8 +148,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             size = int(self.headers.get('Content-Length', '0'))
-            if not 0 < size <= MAX_BODY:
-                self.send({'error': '文件过大或请求为空（文件上限 32 MB）'}, 413)
+            limit=file_limit(self.path)
+            max_body=limit*4//3+2*1024*1024 if self.path in ('/api/inventory/inspect','/api/inventory/analyze') else MAX_BODY
+            if not 0 < size <= max_body:
+                self.send({'error':f'文件过大或请求为空（此操作文件上限 {limit//(1024*1024)} MB）'}, 413)
                 return
             body = json.loads(self.rfile.read(size))
             if self.headers.get('X-Template-Request') != '1':
@@ -211,8 +218,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(list(groups.values()))
                 return
             data = base64.b64decode(body['data'], validate=True)
-            if len(data) > 32 * 1024 * 1024:
-                raise ValueError('文件不能超过 32 MB')
+            if len(data) > limit:
+                raise ValueError(f'文件不能超过 {limit//(1024*1024)} MB')
             name = body.get('filename', '')
             if not isinstance(name, str) or not name or '/' in name or '\\' in name or len(name) > 200:
                 raise ValueError('文件名无效')

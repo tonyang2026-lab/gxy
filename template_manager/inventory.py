@@ -66,6 +66,8 @@ def col_index(ref):
 
 def read_tables(data, filename):
     suffix = Path(filename).suffix.lower()
+    if suffix=='.xls' and data[:4]==b'PK\x03\x04':
+        suffix='.xlsx'  # Some exports use .xls for an OOXML ZIP container.
     if suffix == '.csv':
         try:
             text = data.decode('utf-8-sig')
@@ -86,7 +88,7 @@ def read_tables(data, filename):
             rows.append((num, [v.strip() for v in row]))
         return [{'name': 'CSV', 'rows': rows, 'warnings': []}]
     if suffix not in ('.xlsx', '.xlsm'):
-        raise ValueError('库存表支持 .xlsx、.xlsm、.csv；旧版 .xls 请另存为 .xlsx')
+        raise ValueError('库存表支持 .xlsx、.xlsm、.csv；真正的旧版 .xls 请用 Excel/WPS 另存为 .xlsx 并保留图片，不能只改文件扩展名')
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         if len(z.infolist()) > 5000 or sum(i.file_size for i in z.infolist()) > 256 * 1024 * 1024 or any(i.file_size > 32 * 1024 * 1024 for i in z.infolist()):
             raise ValueError('工作簿展开体积过大，请拆分文件')

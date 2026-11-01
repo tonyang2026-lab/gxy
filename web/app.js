@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const UI_REVISION='千问模型修复版 1101.2';
+const UI_REVISION='库存100MB版 1101.3';
 ensureInventoryShopPicker();
 let templates = [];
 let inventoryShopNames=[];
@@ -83,12 +83,14 @@ async function load() {
   [...new Set(templates.map(t=>t.marketplace))].sort().forEach(m=>$('filter-market').add(new Option(m,m)));
   $('filter-market').value=selected;const selectedShop=$('filter-shop').value;const shops=[...new Set(['通用模板',...registeredShops,...templates.map(t=>t.shop||'通用模板')])].sort();$('filter-shop').replaceChildren(new Option('全部店铺',''),...shops.map(shop=>new Option(shop,shop)));$('filter-shop').value=selectedShop;$('shop-options').replaceChildren(...shops.map(shop=>new Option(shop,shop)));inventoryShopNames=shops;updateInventoryShopOptions();for(const [id,field,label] of [['filter-category','category','全部类别'],['filter-version','version','全部版本']]){const value=$(id).value;$(id).replaceChildren(new Option(label,''),...[...new Set(templates.map(t=>t[field]))].sort().map(item=>new Option(item,item)));$(id).value=value;}render();
 }
-async function encoded(file) {
-  if(file.size>32*1024*1024)throw new Error('文件不能超过 32 MB');
+async function encoded(file,maxMB=32) {
+  if(file.size>maxMB*1024*1024)throw new Error('当前文件 '+(file.size/1024/1024).toFixed(1)+' MB，超过此操作 '+maxMB+' MB 上限');
   return await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result.split(',')[1]);r.onerror=()=>reject(new Error('文件读取失败'));r.readAsDataURL(file);});
 }
 async function sendFile(url,file,meta={}) {
-  return request(url,{method:'POST',headers:{'Content-Type':'application/json','X-Template-Request':'1'},body:JSON.stringify({filename:file.name,data:await encoded(file),...meta})});
+  const inventory=url.startsWith('/api/inventory/');
+  if(inventory&&/\.xls$/i.test(file.name)){const header=new Uint8Array(await file.slice(0,4).arrayBuffer());if(!(header[0]===0x50&&header[1]===0x4b&&header[2]===3&&header[3]===4))throw new Error('旧版 .xls 请先用 Excel/WPS 另存为 .xlsx 并保留图片，不能只改扩展名');}
+  return request(url,{method:'POST',headers:{'Content-Type':'application/json','X-Template-Request':'1'},body:JSON.stringify({filename:file.name,data:await encoded(file,inventory?100:32),...meta})});
 }
 $('file').addEventListener('change',()=>$('file-name').textContent=$('file').files[0]?.name||'点击选择亚马逊原始模板');
 $('version').value=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -425,3 +427,5 @@ $('ai-region').addEventListener('change',()=>{$('ai-key').value='';$('ai-test-re
 $('ai-test').addEventListener('click',async()=>{const button=$('ai-test');button.disabled=true;$('ai-test-result').textContent='正在测试已保存的模型配置…';try{const result=await postJSON('/api/ai/test',{});$('ai-test-result').textContent=result.message+' 模型：'+result.model+'；接口：'+result.endpoint;}catch(e){$('ai-test-result').textContent=e.message;notify(e.message,true);}finally{button.disabled=false;}});
 
 if($('ai-use-recommended'))$('ai-use-recommended').addEventListener('click',()=>{const provider=$('ai-provider').value;const model=window.currentAI?.providers?.[provider]?.model||({qwen:'qwen3-vl-plus',openai:'gpt-4.1-mini',deepseek:'deepseek-chat'}[provider]);$('ai-model').value=model;notify('已填入 '+model+'，请保存配置后测试模型连接');});
+
+$('inventory-file').addEventListener('change',()=>{const file=$('inventory-file').files[0],info=$('inventory-file-info');if(info)info.textContent=file?file.name+' · '+(file.size/1024/1024).toFixed(1)+' MB'+(/\.xls$/i.test(file.name)?' · 旧版格式请另存为 .xlsx':''):'选择文件后显示大小和格式';});
