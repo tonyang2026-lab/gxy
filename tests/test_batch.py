@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from xml.sax.saxutils import escape
 import zipfile
 
@@ -69,6 +70,46 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(metadata.inspect(library.verified(self.root,by_shop[shop]))['account_fingerprint'],roster.fingerprint(seller))
         _,again=batch.generate(self.root,source,'source.xlsm',['测试甲','测试乙'],'行李箱','batch-v1')
         self.assertEqual(again['reused'],2)
+
+    def test_save_only_returns_report_and_stores_verified_workbooks(self):
+        source=account_book(account='ATEST001')
+        archive,report=batch.generate(self.root,source,'source.xlsm',['测试甲','测试乙'],'行李箱','save-only',create_archive=False)
+        self.assertIsNone(archive)
+        self.assertFalse(report['download_requested'])
+        self.assertTrue(report['save_requested'])
+        self.assertEqual((report['saved'],report['failed']),(2,0))
+        rows=library.run(SimpleNamespace(command='list',library=str(self.root),marketplace=None,category=None))
+        by_shop={r['shop']:r for r in rows}
+        for shop,seller in [('测试甲','ATEST001'),('测试乙','ATEST003')]:
+            raw=library.verified(self.root,by_shop[shop])
+            self.assertEqual(metadata.inspect(raw)['account_fingerprint'],roster.fingerprint(seller))
+        _,again=batch.generate(self.root,source,'source.xlsm',['测试甲','测试乙'],'行李箱','save-only',create_archive=False)
+        self.assertEqual((again['saved'],again['reused']),(0,2))
+
+    def test_save_only_partial_failure_reports_no_download_and_retry_reuses_success(self):
+        source=account_book(account='ATEST001');real_run=library.run
+        def store(args):
+            if args.command=='add' and args.shop=='测试乙':
+                raise OSError('simulated disk failure')
+            return real_run(args)
+        with patch.object(library,'run',side_effect=store):
+            archive,report=batch.generate(self.root,source,'source.xlsm',['测试甲','测试乙'],'行李箱','partial',create_archive=False)
+        self.assertIsNone(archive)
+        self.assertEqual((report['saved'],report['failed']),(1,1))
+        failed=next(item for item in report['items'] if item['library_status']=='failed')
+        self.assertNotIn('下载包',failed['error'])
+        self.assertNotIn('template_id',failed)
+        _,retry=batch.generate(self.root,source,'source.xlsm',['测试甲','测试乙'],'行李箱','partial',create_archive=False)
+        self.assertEqual((retry['saved'],retry['reused'],retry['failed']),(1,1,0))
+
+    def test_no_output_or_invalid_switch_rejected_before_generation(self):
+        source=account_book(account='ATEST001')
+        with patch.object(batch,'replace_identity') as replace:
+            with self.assertRaisesRegex(ValueError,'至少选择'):
+                batch.generate(self.root,source,'source.xlsm',['测试甲'],'行李箱','v1',False,False)
+            with self.assertRaisesRegex(ValueError,'开关'):
+                batch.generate(self.root,source,'source.xlsm',['测试甲'],'行李箱','v1',True,'false')
+            replace.assert_not_called()
 
     def test_only_same_primary_region_target_allowed(self):
         roster.import_text(self.root,'店铺,AE,SA\n仅沙特,,ATEST005')

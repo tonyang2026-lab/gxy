@@ -120,7 +120,11 @@ def safe_name(value):
     return value
 
 
-def generate(root, data, filename, shops, category, version, save_to_library=True):
+def generate(root, data, filename, shops, category, version, save_to_library=True, create_archive=True):
+    if type(save_to_library) is not bool or type(create_archive) is not bool:
+        raise ValueError('保存和下载选项须为有效的开关值')
+    if not save_to_library and not create_archive:
+        raise ValueError('请至少选择保存到模板库或下载 ZIP')
     if not isinstance(shops, list) or not 1 <= len(shops) <= 50 or not all(isinstance(s, str) for s in shops) or len(set(shops)) != len(shops):
         raise ValueError('请选择 1–50 家不同的目标店铺')
     if not isinstance(category, str) or not category.strip() or len(category) > 120 or not isinstance(version, str) or not version.strip() or len(version) > 120:
@@ -152,11 +156,10 @@ def generate(root, data, filename, shops, category, version, save_to_library=Tru
             raise ValueError('“'+shop+'”已有同站点、类目、版本的不同文件，请更换批量版本标签；尚未入库')
         name = f'{safe_name(shop)}_{hashlib.sha256(shop.encode()).hexdigest()[:8]}_{marketplace}_{safe_name(category)}_{safe_name(version)}{suffix}'
         plans.append({'shop':shop, 'output_name':name, 'data':output, 'audit':audit, 'sha256':sha, 'account_hint':target['account_hint']})
-    report = {'source':filename, 'source_sha256':library.digest(data), 'marketplace':marketplace, 'category':category.strip(), 'version':version.strip(), 'generated':len(plans), 'saved':0, 'reused':0, 'failed':0, 'items':[], 'notes':['仅替换主 Template!A1 contributorId；保留原模板的站点、字段、商品数据、宏及其他元数据，包括来源偏好设置。', '只生成同主站点副本，不把 AE 模板转换成 SA 模板。', '本地结构与目标标识检查不代表亚马逊接受；各店铺处理结果需以亚马逊报告为准。']}
+    report = {'source':filename, 'source_sha256':library.digest(data), 'marketplace':marketplace, 'category':category.strip(), 'version':version.strip(), 'generated':len(plans), 'saved':0, 'reused':0, 'failed':0, 'save_requested':save_to_library, 'download_requested':create_archive, 'items':[], 'notes':['仅替换主 Template!A1 contributorId；保留原模板的站点、字段、商品数据、宏及其他元数据，包括来源偏好设置。', '只生成同主站点副本，不把 AE 模板转换成 SA 模板。', '本地结构与目标标识检查不代表亚马逊接受；各店铺处理结果需以亚马逊报告为准。']}
     if info.get('has_prefilled_data'):
         report['notes'].append('源模板已有预填数据，副本原样保留；使用前请核对商品内容。')
-    archive = io.BytesIO()
-    with tempfile.TemporaryDirectory() as temporary, zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
+    with tempfile.TemporaryDirectory() as temporary:
         for plan in plans:
             item = {k:v for k,v in plan.items() if k!='data'}
             item['library_status'] = 'not_requested'
@@ -170,7 +173,13 @@ def generate(root, data, filename, shops, category, version, save_to_library=Tru
                 except Exception:
                     item['library_status'] = 'failed'
                     report['failed'] += 1
-                    item['error'] = '入库失败；文件已在下载包中保留，请检查磁盘或稍后重试'
-            z.writestr(plan['output_name'],plan['data']);report['items'].append(item)
+                    item['error'] = '入库失败；'+('文件已在下载包中保留，' if create_archive else '')+'请检查磁盘后使用相同源文件和版本重试，成功入库的文件可复用'
+            report['items'].append(item)
+    if not create_archive:
+        return None, report
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
+        for plan in plans:
+            z.writestr(plan['output_name'],plan['data'])
         z.writestr('生成与入库报告.json',json.dumps(report,ensure_ascii=False,indent=2))
     return archive.getvalue(), report

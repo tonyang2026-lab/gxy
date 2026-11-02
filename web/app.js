@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const UI_REVISION='批量下载·加速版 1101.4';
+const UI_REVISION='批量生成可选版 1102.1';
 ensureInventoryShopPicker();
 let templates = [];
 let inventoryShopNames=[];
@@ -12,7 +12,7 @@ let timer;
 const PAGES={
   library:{id:'library',title:'模板库',description:'查找和下载团队保存的模板，按店铺、地区与类目筛选。',roles:['admin','editor','viewer']},
   import:{id:'import',title:'上传模板',description:'保存原始模板，自动读取来源，只需确认店铺名称。',roles:['admin','editor']},
-  batch:{id:'batch-panel',title:'同地区批量生成',description:'上传一次，为同地区店铺生成独立模板并分别入库。',roles:['admin','editor']},
+  batch:{id:'batch-panel',title:'同地区批量生成',description:'为同地区店铺生成模板，可选择保存入库或下载 ZIP。',roles:['admin','editor']},
   inventory:{id:'inventory',title:'库存识别',description:'识别商品类型，直接获取对应类别表格。',roles:['admin','editor','viewer']},
   shops:{id:'shop-roster-panel',title:'店铺管理',description:'管理店铺及各地区的卖家记号。',roles:['admin']},
   ai:{id:'ai-settings-panel',title:'AI 设置',description:'独立配置 AI 服务商、模型与 API 密钥。',roles:['admin']},
@@ -313,43 +313,96 @@ $('file').addEventListener('change',async()=>{
 
 $('logout').addEventListener('click',()=>{$('shop-roster-text').value='';$('shop-roster-status').textContent='';});
 
-let batchFile=null,batchSource=null,batchReading=false;
+let batchFile=null,batchSource=null,batchReading=false,batchReadSequence=0,batchLastResult=null,batchDownloading=false;
 $('batch-version').value=$('version').value+'-批量';
-function selectBatchTargets(){
-  if(!batchSource)return;for(const checkbox of $('batch-targets').querySelectorAll('input'))checkbox.checked=!checkbox.disabled;
+const batchModeLabels={library:'生成并保存到模板库',both:'生成、保存并下载 ZIP',download:'生成并下载 ZIP'};
+function batchMode(){return document.querySelector('input[name="batch-output"]:checked')?.value||'library';}
+function updateBatchControls(){
+  const available=[...$('batch-targets').querySelectorAll('input:not(:disabled)')],selected=available.filter(c=>c.checked);
+  $('batch-selection-count').textContent=batchSource?'已选 '+selected.length+' / '+available.length+' 家店铺':'尚未读取店铺';
+  $('batch-select-all').disabled=busy||batchReading||!available.length;$('batch-clear-all').disabled=busy||batchReading||!selected.length;
+  $('batch-submit').disabled=busy||batchReading||!batchSource||!selected.length;
+  if(!busy)$('batch-submit').textContent=batchModeLabels[batchMode()];
+  $('batch-mode-note').textContent={library:'完成后可在模板库查找，也可手动下载本批模板。',both:'生成后保存到模板库，并自动下载一份 ZIP。',download:'生成后只下载 ZIP，模板库中不会增加记录。'}[batchMode()];
+}
+function clearBatchResult(){batchLastResult=null;$('batch-result').hidden=true;$('batch-result-rows').replaceChildren();}
+function selectBatchTargets(selected=true){
+  if(!batchSource)return;for(const checkbox of $('batch-targets').querySelectorAll('input'))checkbox.checked=selected&&!checkbox.disabled;updateBatchControls();
 }
 async function readBatchSource(){
-  const file=$('batch-file').files[0];batchFile=null;batchSource=null;$('batch-targets').replaceChildren();if(!file)return;
-  batchReading=true;$('batch-source').textContent='正在读取源模板和同地区店铺…';
+  const sequence=++batchReadSequence,file=$('batch-file').files[0];batchFile=null;batchSource=null;clearBatchResult();$('batch-targets').replaceChildren();
+  if(!file){batchReading=false;$('batch-source').textContent='选择文件后自动读取地区与来源店铺。';updateBatchControls();return;}
+  batchReading=true;$('batch-source').textContent='正在读取源模板和同地区店铺…';updateBatchControls();
   try{
     const source=await sendFile('/api/template/inspect',file);const m=source.metadata;
+    if(sequence!==batchReadSequence)return;
     if(!m.marketplace||!m.account_fingerprint)throw new Error('源模板缺少可识别的主站点或卖家记号');
     const targets=await request('/api/shops/targets?marketplace='+encodeURIComponent(m.marketplace));
-    if($('batch-file').files[0]!==file)return;batchFile=file;batchSource=source;
+    if(sequence!==batchReadSequence)return;batchFile=file;batchSource=source;
     if(m.product_types?.length===1)$('batch-category').value=m.product_types[0]==='SUITCASE'?'行李箱':m.product_types[0];
-    $('batch-source').textContent='源店铺：'+(source.recognized_shop||'未登记来源')+' · 主站点：'+m.marketplace+' · '+m.field_count+' 个字段，仅生成 '+m.marketplace+' 地区副本'+(m.has_prefilled_data?'；已有预填数据会保留':'');
-    for(const target of targets){const label=document.createElement('label');const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=target.shop;checkbox.disabled=!target.can_generate;label.append(checkbox,document.createTextNode(target.shop+' · '+target.account_hint+(target.can_generate?'':'（需重新导入完整记号）')));$('batch-targets').append(label);}
-    if(!targets.length)$('batch-targets').textContent='该地区暂无店铺对照记录，请先让管理员导入对照表。';
+    $('batch-source').textContent='源店铺：'+(source.recognized_shop||'未登记来源')+' · 地区：'+m.marketplace+' · '+m.field_count+' 个字段'+(m.has_prefilled_data?' · 已有商品内容会保留':'');
+    for(const target of targets){const label=document.createElement('label');const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=target.shop;checkbox.disabled=!target.can_generate;const name=document.createElement('span');name.textContent=target.shop+' · '+target.account_hint+(target.can_generate?'':'（需补全卖家记号）');name.title=name.textContent;label.append(checkbox,name);$('batch-targets').append(label);}
+    if(!targets.length)$('batch-targets').textContent='该地区暂无店铺记录，请先在店铺管理中登记。';
     selectBatchTargets();
-  }catch(e){$('batch-source').textContent=e.message;notify(e.message,true);}finally{batchReading=false;}
+  }catch(e){if(sequence===batchReadSequence){$('batch-source').textContent=e.message;notify(e.message,true);}}
+  finally{if(sequence===batchReadSequence){batchReading=false;updateBatchControls();}}
 }
-$('batch-file').addEventListener('change',readBatchSource);$('batch-select-all').addEventListener('click',selectBatchTargets);
+$('batch-file').addEventListener('change',readBatchSource);$('batch-select-all').addEventListener('click',()=>selectBatchTargets());$('batch-clear-all').addEventListener('click',()=>selectBatchTargets(false));$('batch-targets').addEventListener('change',updateBatchControls);
+for(const radio of document.querySelectorAll('input[name="batch-output"]'))radio.addEventListener('change',updateBatchControls);
+function saveDownloadBlob(blob,filename){
+  const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function renderBatchResult(result){
+  batchLastResult=result;const report=result.report,ids=[...new Set((report.items||[]).filter(item=>item.template_id&&['saved','reused'].includes(item.library_status)).map(item=>item.template_id))];result.ids=ids;
+  $('batch-result-context').textContent=report.marketplace+' · '+report.category+' · 版本：'+report.version;
+  $('batch-result').hidden=false;$('batch-result').classList.toggle('has-errors',report.failed>0);$('batch-result-title').textContent=report.failed?'部分入库失败，请核对':'生成完成';
+  $('batch-result-counts').replaceChildren(...[['已生成',report.generated],['新入库',report.saved],['复用已有',report.reused],['入库失败',report.failed]].map(([label,value])=>{const box=document.createElement('div'),number=document.createElement('strong'),name=document.createElement('span');number.textContent=value;name.textContent=label;box.append(number,name);return box;}));
+  $('batch-status').textContent=report.failed?'有 '+report.failed+' 份未成功入库。'+(result.blob?'副本已保留在 ZIP 中，请查看包内报告。':'请查看逐店结果；检查磁盘后可用相同源文件和版本重试，成功项会复用。'):result.blob?(report.save_requested?'已按店铺保存，并开始下载 ZIP。':'ZIP 已开始下载，本次未保存到模板库。'):'已保存到共享模板库，可直接查看或按需下载，不会自动弹出下载窗口。';
+  $('batch-open-library').hidden=!report.saved&&!report.reused;
+  $('batch-download-result').hidden=!result.blob&&!ids.length;$('batch-download-result').textContent=result.blob?'再次下载 ZIP':'下载本批已入库模板';
+  $('batch-download-report').hidden=!report.items;
+  $('batch-result-details').hidden=!report.items;$('batch-result-details').open=!!report.failed&&!!report.items;$('batch-result-rows').replaceChildren();
+  const labels={saved:'已入库',reused:'复用已有',failed:'入库失败',not_requested:'仅下载'};
+  for(const item of report.items||[]){const row=document.createElement('tr');cell(row,item.shop);cell(row,labels[item.library_status]||item.library_status);const file=cell(row,item.output_name);file.className='batch-result-file';file.title=item.output_name;cell(row,item.error||'');$('batch-result-rows').append(row);}
+}
 $('batch-form').addEventListener('submit',async e=>{
   e.preventDefault();if(busy||batchReading){notify('请等待当前操作完成',true);return;}
   const file=$('batch-file').files[0];if(file!==batchFile||!batchSource){notify('请先读取有效源模板',true);return;}
   const shops=[...$('batch-targets').querySelectorAll('input:checked')].map(c=>c.value);if(!shops.length){notify('请选择至少一家同地区目标店铺',true);return;}
-  busy=true;const b=e.submitter;const controls=[...$('batch-form').querySelectorAll('input,button')];const states=controls.map(c=>c.disabled);controls.forEach(c=>c.disabled=true);const old=b.textContent;b.textContent='正在生成和校验…';
+  const mode=batchMode(),marketplace=batchSource.metadata.marketplace;
+  busy=true;const controls=[...$('batch-form').querySelectorAll('input,button')];const states=controls.map(c=>c.disabled);controls.forEach(c=>c.disabled=true);$('batch-submit').textContent='正在生成和校验…';
   try{
-    const payload={filename:file.name,data:await encoded(file),shops,category:$('batch-category').value,version:$('batch-version').value,save_to_library:$('batch-save').checked};
+    const payload={filename:file.name,data:await encoded(file),shops,category:$('batch-category').value,version:$('batch-version').value,save_to_library:mode!=='download',download_zip:mode!=='library'};
     const response=await fetch('/api/template/batch',{method:'POST',headers:{'Content-Type':'application/json','X-Template-Request':'1'},body:JSON.stringify(payload)});
     if(!response.ok){const error=await response.json();throw new Error(error.error||'生成失败');}
-    const blob=await response.blob();const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='同地区多店铺模板-'+batchSource.metadata.marketplace+'.zip';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-    const generated=Number(response.headers.get('X-Generated-Count')),saved=Number(response.headers.get('X-Saved-Count')),reused=Number(response.headers.get('X-Reused-Count')),failed=Number(response.headers.get('X-Failed-Count'));
-    $('batch-status').textContent='已生成 '+generated+' 份 '+batchSource.metadata.marketplace+' 副本；新入库 '+saved+'，复用已有 '+reused+'，入库失败 '+failed+'。每店修改与入库结果见 ZIP 内报告。请以亚马逊实际处理报告确认上传结果。';
-    await load();notify('批量生成完成，下载包内附修改报告');
-  }catch(err){notify(err.message,true);}finally{busy=false;controls.forEach((c,i)=>c.disabled=states[i]);b.textContent=old;}
+    let result;
+    if(mode==='library'){
+      if(!(response.headers.get('Content-Type')||'').includes('application/json'))throw new Error('服务器仍是旧版本，请完整覆盖新版程序并重启后重试');
+      result={report:await response.json(),blob:null};
+    }else{
+      const blob=await response.blob(),report={marketplace,category:payload.category.trim(),version:payload.version.trim(),save_requested:payload.save_to_library};
+      for(const [field,header] of [['generated','Generated'],['saved','Saved'],['reused','Reused'],['failed','Failed']])report[field]=Number(response.headers.get('X-'+header+'-Count'));
+      result={report,blob,filename:'同地区多店铺模板-'+marketplace+'.zip'};saveDownloadBlob(blob,result.filename);
+    }
+    renderBatchResult(result);
+    if(payload.save_to_library){try{await load();}catch(error){notify('生成已完成；模板库列表刷新失败，请稍后刷新查看',true);return;}}
+    notify(result.report.failed?'部分入库失败，请查看本次结果':mode==='library'?'已保存到模板库，需要时再下载':'批量生成完成，ZIP 内附生成报告',result.report.failed>0);
+  }catch(err){notify(err.message,true);}finally{busy=false;controls.forEach((c,i)=>c.disabled=states[i]);updateBatchControls();}
 });
-$('logout').addEventListener('click',()=>{$('batch-file').value='';batchFile=null;batchSource=null;$('batch-targets').replaceChildren();$('batch-status').textContent='';});
+$('batch-download-result').addEventListener('click',async()=>{
+  if(!batchLastResult||batchDownloading)return;if(busy){notify('请等待当前操作完成',true);return;}
+  const result=batchLastResult;if(result.blob){saveDownloadBlob(result.blob,result.filename);return;}
+  batchDownloading=true;$('batch-download-result').disabled=true;
+  try{
+    const response=await fetch('/api/templates/download',{method:'POST',headers:{'Content-Type':'application/json','X-Template-Request':'1'},body:JSON.stringify({ids:result.ids})});
+    if(!response.ok){const error=await response.json();throw new Error(error.error||'下载失败');}
+    const match=(response.headers.get('Content-Disposition')||'').match(/filename\*=UTF-8''([^;]+)/i);saveDownloadBlob(await response.blob(),match?decodeURIComponent(match[1]):'本批模板.zip');
+  }catch(error){notify(error.message,true);}finally{batchDownloading=false;$('batch-download-result').disabled=false;}
+});
+$('batch-download-report').addEventListener('click',()=>{if(batchLastResult?.report.items)saveDownloadBlob(new Blob([JSON.stringify(batchLastResult.report,null,2)],{type:'application/json;charset=utf-8'}),'生成与入库报告.json');});
+$('batch-open-library').addEventListener('click',()=>{if(!batchLastResult)return;const report=batchLastResult.report;$('search').value='';$('filter-shop').value='';for(const [id,value] of [['filter-market',report.marketplace],['filter-category',report.category],['filter-version',report.version]])$(id).value=value;render();});
+$('logout').addEventListener('click',()=>{$('batch-file').value='';batchReadSequence++;batchFile=null;batchSource=null;batchReading=false;$('batch-targets').replaceChildren();clearBatchResult();updateBatchControls();});
+updateBatchControls();
 
 function drawShopEditor(rows){
   $('shop-grid-body').replaceChildren();

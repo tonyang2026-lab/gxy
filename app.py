@@ -270,9 +270,14 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(library.inspect_template(self.root, data, Path(name).suffix))
                 return
             if self.path == '/api/template/batch':
+                save_to_library = body.get('save_to_library', True)
+                download_zip = body.get('download_zip', True)
                 with LOCK:
-                    archive, report = batch.generate(self.root, data, name, body.get('shops'), body.get('category'), body.get('version'), body.get('save_to_library') is not False)
-                self.send(archive, mime='application/zip', filename='同地区多店铺模板-'+report['marketplace']+'.zip', extra_headers={'X-Generated-Count': report['generated'], 'X-Saved-Count': report['saved'], 'X-Reused-Count': report['reused'], 'X-Failed-Count':report['failed']})
+                    archive, report = batch.generate(self.root, data, name, body.get('shops'), body.get('category'), body.get('version'), save_to_library, create_archive=download_zip)
+                if download_zip:
+                    self.send(archive, mime='application/zip', filename='同地区多店铺模板-'+report['marketplace']+'.zip', extra_headers={'X-Generated-Count': report['generated'], 'X-Saved-Count': report['saved'], 'X-Reused-Count': report['reused'], 'X-Failed-Count':report['failed']})
+                else:
+                    self.send(report)
                 return
             if self.path == '/api/inventory/analyze':
                 user, job = current_user['username'], body.get('job_id')

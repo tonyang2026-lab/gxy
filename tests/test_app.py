@@ -199,6 +199,33 @@ class SharedLibraryTest(unittest.TestCase):
             self.assertEqual(report['marketplace'],'AE')
             self.assertEqual(report['saved'],0)
 
+    def test_batch_save_only_json_permissions_and_later_download(self):
+        from test_roster import TABLE
+        from test_metadata import account_book
+        owner,writer,reader=[self.login(name) for name in ('owner','writer','reader')]
+        self.assertEqual(self.req('POST','/api/shops/import',{'text':TABLE},owner)[0],200)
+        source=account_book(account='ATEST001')
+        payload={'filename':'source.xlsm','data':base64.b64encode(source).decode(),'shops':['测试甲','测试乙'],'category':'仅入库接口测试','version':'api-save-only','save_to_library':True,'download_zip':False}
+        self.assertEqual(self.req('POST','/api/template/batch',payload,reader)[0],403)
+        self.assertEqual(self.req('POST','/api/template/batch',dict(payload,save_to_library=False),writer)[0],400)
+        ids=[]
+        try:
+            status,raw,_=self.req('POST','/api/template/batch',payload,writer)
+            self.assertEqual(status,200,raw);report=json.loads(raw)
+            self.assertEqual((report['generated'],report['saved'],report['failed']),(2,2,0))
+            self.assertFalse(report['download_requested'])
+            self.assertNotIn(b'ATEST003',raw)
+            ids=[item['template_id'] for item in report['items']]
+            for ident in ids:self.assertEqual(self.req('GET','/api/download/'+ident,cookie=reader)[0],200)
+            status,raw,_=self.req('POST','/api/templates/download',{'ids':ids},reader)
+            self.assertEqual(status,200)
+            with zipfile.ZipFile(io.BytesIO(raw)) as z:self.assertEqual(len(z.namelist()),2)
+            status,raw,_=self.req('POST','/api/template/batch',payload,writer)
+            self.assertEqual(status,200,raw)
+            self.assertEqual(json.loads(raw)['reused'],2)
+        finally:
+            if ids:self.req('POST','/api/templates/delete',{'ids':ids},writer)
+
     def test_ai_config_permissions_consent_and_result(self):
         owner, reader = self.login('owner'), self.login('reader')
         config = {'provider': 'qwen', 'model': 'qwen-vl-plus', 'api_key': 'unit-test-not-a-real-key'}
