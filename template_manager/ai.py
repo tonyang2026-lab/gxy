@@ -288,7 +288,9 @@ def probe(settings):
 
 
 def enrich(report, tables, templates, data, filename, settings, include_images=False, limit=30,
-           cache=None, cache_scope='', progress=None):
+           cache=None, cache_scope='', progress=None, alias_rules=None):
+    from .product_types import CategoryResolver
+    resolver = CategoryResolver(alias_rules or [])
     from .inventory import header_info, summarize
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError('每次 AI 分析商品数须在 1–500 之间')
@@ -321,14 +323,14 @@ def enrich(report, tables, templates, data, filename, settings, include_images=F
     same_site = sorted(latest.values(), key=lambda t: t['id'])
     if len(same_site) > 300:
         raise ValueError('当前站点不同店铺/类别模板超过 300 份，请先缩小模板范围；本次 AI 尚未调用')
-    catalog = [{'id': t['id'], 'category': t['category'], 'filename': t['original_name'], 'version': t['version'], 'shop': t.get('shop', GLOBAL_SHOP), 'product_types': declared_types(t), 'product_type_labels': type_labels(t)} for t in same_site]
+    catalog = [{'id': t['id'], 'category': t['category'], 'filename': t['original_name'], 'version': t['version'], 'shop': t.get('shop', GLOBAL_SHOP), 'product_types': declared_types(t), 'product_type_labels': type_labels(t, resolver)} for t in same_site]
     if len(json.dumps(catalog, ensure_ascii=False).encode()) > 256 * 1024:
         raise ValueError('模板及支持类型清单过大，请缩小模板范围；本次 AI 尚未调用')
     candidates = {t['id']: t for t in same_site}
     def fingerprint(value):
         return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     # Changing member, credentials, model, region, target shop/site or catalog invalidates cache hits.
-    namespace = fingerprint([cache_scope, settings.connection(), report.get('shop'), report['marketplace'], report.get('table_type', 'upload'), catalog])
+    namespace = fingerprint([cache_scope, settings.connection(), report.get('shop'), report['marketplace'], report.get('table_type', 'upload'), report.get('alias_revision'), catalog])
     groups = {}
     image_fingerprints = {}
     for r in selected:
@@ -351,7 +353,7 @@ def enrich(report, tables, templates, data, filename, settings, include_images=F
         nonlocal successes, cached
         candidate = candidates.get(answer.get('template_id'))
         if candidate:
-            report.setdefault('template_supports', {})[candidate['id']] = {'product_types': declared_types(candidate), 'product_type_labels': type_labels(candidate)}
+            report.setdefault('template_supports', {})[candidate['id']] = {'product_types': declared_types(candidate), 'product_type_labels': type_labels(candidate, resolver)}
         for index, r in enumerate(group['rows']):
             reused = source == 'cache' or index > 0
             r['ai'] = {'category': answer['category'], 'confidence': answer['confidence'], 'evidence': answer['evidence'], 'image_attached': r['row'] in images, 'provider': provider, 'model': model, 'matched_product_type': answer.get('matched_product_type'), 'source': 'cache' if source == 'cache' else 'duplicate' if index else 'api'}
@@ -420,7 +422,7 @@ def enrich(report, tables, templates, data, filename, settings, include_images=F
                             stopped = True
                     if not stopped:
                         fill()
-    summarize(report)
+    summarize(report, resolver)
     report['ai_summary'] = {'provider': provider, 'model': model, 'requested': len(selected), 'completed': successes, 'failed_batch_rows': failed, 'images_attached': len(images), 'images_sent': images_sent, 'limit': limit, 'unique_products': len(groups), 'deduplicated': len(selected)-len(groups), 'cached': cached, 'calls': calls, 'concurrency': 3}
     report['warnings'].append(f'AI 分析完成 {successes}/{len(selected)} 行；相同资料合并 {len(selected)-len(groups)} 行，缓存复用 {cached} 行，实际调用 {calls} 批、发送 {images_sent} 张图片。未完成商品保留本地结果；AI 结果仍需确认。')
     emit('complete')

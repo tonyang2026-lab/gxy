@@ -17,7 +17,7 @@ import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, urlparse
 
-from template_manager import library
+from template_manager import library, aliases
 from template_manager.auth import Auth
 from template_manager import inventory
 from template_manager import ai
@@ -155,6 +155,10 @@ class Handler(BaseHTTPRequestHandler):
                         self.send(roster.editable_directory(self.root))
                 elif path.path == '/api/shops/targets':
                     self.send(roster.targets(self.root, parse_qs(path.query).get('marketplace', [''])[0]))
+                elif path.path == '/api/aliases':
+                    self.send(aliases.directory(self.root))
+                elif path.path == '/api/aliases/export':
+                    self.send(aliases.export_csv(self.root), mime='text/csv; charset=utf-8', filename='商品叫法归类.csv')
                 elif path.path == '/api/backup':
                     with tempfile.TemporaryDirectory() as d:
                         dest = Path(d) / 'backup.zip'
@@ -260,12 +264,29 @@ class Handler(BaseHTTPRequestHandler):
                     row[record['marketplace'].lower()]=record['seller_id']
                 self.send(list(groups.values()))
                 return
+            if self.path == '/api/aliases/preview':
+                rows = aliases.parse_text(body.get('text', ''), body.get('category', ''))
+                with LOCK:self.send(aliases.preview(self.root, rows))
+                return
+            if self.path == '/api/aliases/save':
+                with LOCK:self.send(aliases.apply(self.root, body.get('rows'), current_user['username'], body.get('revision')))
+                return
+            if self.path == '/api/aliases/update':
+                with LOCK:self.send(aliases.update(self.root, body.get('key'), body.get('alias'), body.get('category'), current_user['username'], body.get('revision')))
+                return
+            if self.path == '/api/aliases/delete':
+                with LOCK:self.send(aliases.delete(self.root, body.get('keys'), body.get('revision')))
+                return
             data = base64.b64decode(body['data'], validate=True)
             if len(data) > limit:
                 raise ValueError(f'文件不能超过 {limit//(1024*1024)} MB')
             name = body.get('filename', '')
             if not isinstance(name, str) or not name or '/' in name or '\\' in name or len(name) > 200:
                 raise ValueError('文件名无效')
+            if self.path == '/api/aliases/inspect':
+                rows, info = aliases.parse_file(data, name, body.get('sheet'))
+                with LOCK:self.send({**aliases.preview(self.root, rows), **info})
+                return
             if self.path == '/api/inventory/inspect':
                 self.send(inventory.inspect(data, name, body.get('sheet'), body.get('header_row')))
                 return
@@ -294,8 +315,9 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     with LOCK:
                         templates = self.call('list', marketplace=None, category=None)
+                        alias_rules = aliases.directory(self.root)['items']
                     tables = inventory.read_tables(data, name)
-                    report = inventory.analyze(data, name, body.get('marketplace', ''), templates, body.get('sheet'), body.get('header_row'), body.get('mapping'), body.get('category_overrides'), body.get('shop', library.GLOBAL_SHOP), tables=tables, table_type=body.get('table_type', 'upload'), template_overrides=body.get('template_overrides'))
+                    report = inventory.analyze(data, name, body.get('marketplace', ''), templates, body.get('sheet'), body.get('header_row'), body.get('mapping'), body.get('category_overrides'), body.get('shop', library.GLOBAL_SHOP), tables=tables, table_type=body.get('table_type', 'upload'), template_overrides=body.get('template_overrides'), alias_rules=alias_rules)
                     if body.get('use_ai') is True:
                         if body.get('ai_consent') is not True:
                             raise ValueError('请先同意将本次分析涉及的商品资料发送到所选 AI 服务商')
@@ -304,7 +326,7 @@ class Handler(BaseHTTPRequestHandler):
                             self.send({'error': '其他成员正在进行 AI 分析，请稍后重试，避免重复产生费用'}, 409)
                             return
                         try:
-                            report = ai.enrich(report, tables, templates, data, name, self.server.ai, body.get('include_images') is True, body.get('ai_limit', 30), cache=self.server.ai_cache if body.get('use_ai_cache') is not False else None, cache_scope=user, progress=update)
+                            report = ai.enrich(report, tables, templates, data, name, self.server.ai, body.get('include_images') is True, body.get('ai_limit', 30), cache=self.server.ai_cache if body.get('use_ai_cache') is not False else None, cache_scope=user, progress=update, alias_rules=alias_rules)
                         finally:
                             self.server.ai_job_lock.release()
                     update({'stage': 'done', 'completed': len(report['items']), 'total': len(report['items'])})

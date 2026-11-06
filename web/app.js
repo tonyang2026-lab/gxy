@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const UI_REVISION='多类型匹配版 1105.1';
+const UI_REVISION='批量别名版 1106.1';
 const TABLE_TYPES={upload:'上传表格',price_update:'改价表格'};
 ensureInventoryShopPicker();
 let templates = [];
@@ -16,6 +16,7 @@ const PAGES={
   import:{id:'import',title:'上传模板',description:'保存原始模板，自动读取来源，只需确认店铺名称。',roles:['admin','editor']},
   batch:{id:'batch-panel',title:'同地区批量生成',description:'为同地区店铺生成模板，可选择保存入库或下载 ZIP。',roles:['admin','editor']},
   inventory:{id:'inventory',title:'库存识别',description:'识别商品类型，直接获取对应类别表格。',roles:['admin','editor','viewer']},
+  aliases:{id:'aliases-panel',title:'商品叫法归类',description:'批量整理不同叫法，自动匹配对应商品类别。',roles:['admin','editor','viewer']},
   shops:{id:'shop-roster-panel',title:'店铺管理',description:'管理店铺及各地区的卖家记号。',roles:['admin']},
   ai:{id:'ai-settings-panel',title:'AI 设置',description:'独立配置 AI 服务商、模型与 API 密钥。',roles:['admin']},
   members:{id:'admin-panel',title:'成员管理',description:'添加团队成员，分配管理员、编辑者和只读权限。',roles:['admin']},
@@ -135,7 +136,7 @@ async function enter() {
   $('login-screen').hidden=true;$('workspace').hidden=false;
   showPage();await loadAISettings();if(me.role==='admin')await loadShopEditor();
   document.querySelector('.restore-label').hidden=me.role!=='admin';
-  await load();
+  await load();await loadAliases();
 }
 async function postJSON(url,body) {return request(url,{method:'POST',headers:{'Content-Type':'application/json','X-Template-Request':'1'},body:JSON.stringify(body)});}
 $('login-form').addEventListener('submit',async e=>{
@@ -305,6 +306,7 @@ $('inventory-form').addEventListener('submit',async event=>{
     const mapping={};for(const field of ['sku','title','category']){const value=$('inventory-'+field).value;mapping[field]=value===''?null:Number(value);}
     const report=await sendFile('/api/inventory/analyze',file,{table_type:$('inventory-table-type').value,job_id:jobId,use_ai_cache:$('inventory-ai-cache')?.checked!==false,shop:$('inventory-shop').value,marketplace:$('inventory-market').value,sheet:$('inventory-sheet').value,header_row:Number($('inventory-header').value),mapping,category_overrides:inventoryOverrides,template_overrides:inventoryTemplateOverrides,use_ai:useAI,include_images:$('inventory-images').checked,ai_consent:$('inventory-ai-consent').checked,ai_limit:Number($('inventory-ai-limit').value)});
     if($('inventory-file').files[0]!==file||revision!==inventoryFileRevision)return;
+    if(inventoryReport?.alias_revision!==report.alias_revision)inventoryAICache={};
     if(localRecheck)reuseAISuggestions(report);
     for(const item of report.items)if(item.ai)inventoryAICache[item.row]=structuredClone(item);
     if($('inventory-file').files[0]===file){stopProgress(report);renderInventory(report);notify('识别完成，可一键下载全部或勾选表格下载');}
@@ -336,7 +338,7 @@ $('ai-settings-form').addEventListener('submit',async e=>{
 
 function reuseAISuggestions(report){
   let reused=0;
-  for(const item of report.items){const prior=inventoryAICache[item.row];if(!item.confirmed&&prior&&prior.title===item.title&&prior.original_category===item.original_category){Object.assign(item,structuredClone(prior));reused++;}}
+  for(const item of report.items){const prior=inventoryAICache[item.row];if(item.status!=='available'&&!item.confirmed&&prior&&prior.title===item.title&&prior.original_category===item.original_category){Object.assign(item,structuredClone(prior));reused++;}}
   if(!reused)return;
   const groups=new Map();
   for(const item of report.items){const key=JSON.stringify([item.status,item.suggested_category,item.template?.id]);if(!groups.has(key))groups.set(key,{status:item.status,category:item.suggested_category||'无法识别类目',count:0,template:item.template,rows:[]});const group=groups.get(key);group.count++;group.rows.push(item.row);}
@@ -601,3 +603,76 @@ $('ai-region').addEventListener('change',()=>{$('ai-key').value='';$('ai-test-re
 $('ai-test').addEventListener('click',async()=>{const button=$('ai-test');button.disabled=true;$('ai-test-result').textContent='正在测试已保存的模型配置…';try{const result=await postJSON('/api/ai/test',{});$('ai-test-result').textContent=result.message+' 模型：'+result.model+'；接口：'+result.endpoint;}catch(e){$('ai-test-result').textContent=e.message;notify(e.message,true);}finally{button.disabled=false;}});
 
 if($('ai-use-recommended'))$('ai-use-recommended').addEventListener('click',()=>{const provider=$('ai-provider').value;const model=window.currentAI?.providers?.[provider]?.model||({qwen:'qwen3-vl-plus',openai:'gpt-4.1-mini',deepseek:'deepseek-chat'}[provider]);$('ai-model').value=model;notify('已填入 '+model+'，请保存配置后测试模型连接');});
+
+// Team aliases use a preview revision so concurrent edits cannot overwrite each other.
+let aliasDirectory={items:[],builtin:[],revision:null};
+let aliasPreview=null;
+let aliasMode='single';
+let aliasInputRevision=0;
+const aliasSelected=new Set();
+const ALIAS_STATUS={new:'新增',exists:'已存在',builtin:'内置已支持',duplicate:'本批重复',conflict:'冲突',invalid:'无效'};
+function invalidateAliasPreview(){aliasInputRevision++;aliasPreview=null;$('alias-preview').hidden=true;$('alias-save').disabled=true;}
+function aliasFiltered(){const query=$('alias-search').value.trim().normalize('NFKC').toLowerCase();return aliasDirectory.items.filter(row=>(row.alias+' '+row.category).normalize('NFKC').toLowerCase().includes(query));}
+function updateAliasSelection(){
+  const rows=aliasFiltered();const count=rows.filter(row=>aliasSelected.has(row.alias_key)).length;
+  $('alias-select-all').checked=rows.length>0&&count===rows.length;$('alias-select-all').indeterminate=count>0&&count<rows.length;
+  $('alias-delete-selected').disabled=busy||!aliasSelected.size;$('alias-delete-selected').textContent='删除所选'+(aliasSelected.size?'（'+aliasSelected.size+'）':'');
+}
+function renderAliases(){
+  const editable=currentRole!=='viewer';$('alias-editor').hidden=!editable;$('alias-selection-tools').hidden=!editable;$('alias-viewer-note').hidden=editable;
+  $('alias-count').textContent=aliasDirectory.items.length;
+  const rows=aliasFiltered();$('alias-rows').replaceChildren(...rows.slice(0,200).map(row=>{
+    const tr=document.createElement('tr');const select=cell(tr,'');
+    if(editable){const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=aliasSelected.has(row.alias_key);checkbox.setAttribute('aria-label','选择叫法 '+row.alias);checkbox.addEventListener('change',()=>{if(checkbox.checked)aliasSelected.add(row.alias_key);else aliasSelected.delete(row.alias_key);updateAliasSelection();});select.append(checkbox);}
+    const a=cell(tr,''),c=cell(tr,''),actions=cell(tr,'');
+    if(editable){
+      const name=document.createElement('input'),category=document.createElement('input');for(const input of [name,category]){input.type='text';input.maxLength=120;}
+      name.value=row.alias;name.setAttribute('aria-label','叫法 '+row.alias);category.value=row.category;category.setAttribute('aria-label','对应类别 '+row.alias);category.setAttribute('list','alias-category-options');a.append(name);c.append(category);
+      const save=document.createElement('button');save.type='button';save.className='text-button';save.textContent='保存修改';save.addEventListener('click',()=>aliasMutation('/api/aliases/update',{key:row.alias_key,alias:name.value,category:category.value},'归类已更新'));
+      const remove=document.createElement('button');remove.type='button';remove.className='text-button';remove.textContent='删除';remove.addEventListener('click',()=>{if(confirm('删除“'+row.alias+' → '+row.category+'”的归类？'))aliasMutation('/api/aliases/delete',{keys:[row.alias_key]},'归类已删除');});actions.append(save,remove);
+    }else{a.textContent=row.alias;c.textContent=row.category;actions.textContent='只读';}
+    return tr;
+  }));
+  $('alias-list-note').textContent=rows.length?'匹配 '+rows.length+' 条'+(rows.length>200?'，显示前 200 条；可搜索缩小范围，全选会选中全部筛选结果。':'。'):'没有自定义归类，可在上方批量添加。';updateAliasSelection();
+  $('alias-builtin-rows').replaceChildren(...aliasDirectory.builtin.map(row=>{const p=document.createElement('p');p.textContent=row.category+'：'+row.aliases.join('、');return p;}));
+  const categories=new Set([...aliasDirectory.builtin.map(row=>row.category),...aliasDirectory.items.map(row=>row.category),...templates.flatMap(templateCategories)]);
+  $('alias-category-options').replaceChildren(...[...categories].sort().map(value=>{const option=document.createElement('option');option.value=value;return option;}));
+}
+async function loadAliases(){aliasDirectory=await request('/api/aliases');aliasSelected.clear();renderAliases();}
+function renderAliasPreview(){
+  const preview=aliasPreview;if(!preview)return;
+  $('alias-preview').hidden=false;$('alias-preview-counts').textContent=Object.entries(ALIAS_STATUS).map(([key,label])=>label+' '+preview.counts[key]).join(' · ');
+  $('alias-save').disabled=busy||!preview.can_save;$('alias-save').textContent='保存 '+preview.counts.new+' 个新叫法';
+  const rows=preview.items.filter(row=>!$('alias-errors-only').checked||['conflict','invalid'].includes(row.status));
+  $('alias-preview-rows').replaceChildren(...rows.slice(0,200).map(row=>{const tr=document.createElement('tr');if(['conflict','invalid'].includes(row.status))tr.className='alias-error';for(const value of [row.row,row.alias,row.category,ALIAS_STATUS[row.status]+(row.message?'：'+row.message:'')])cell(tr,value);return tr;}));
+  $('alias-preview-note').textContent=(preview.counts.conflict||preview.counts.invalid?'请修正冲突或无效项后重新检查；整批不会部分保存。':preview.can_save?'新增叫法会一次保存；已存在、内置和重复项会自动合并。':'没有需要新增的叫法。')+(rows.length>200?' 当前显示前 200 条，可勾选“仅看冲突与无效项”。':'')+(preview.warnings?.length?' '+preview.warnings.join('；'):'');
+}
+async function aliasMutation(url,payload,message){
+  if(busy)return;busy=true;$('alias-save').disabled=true;updateAliasSelection();
+  try{const result=await postJSON(url,{revision:aliasDirectory.revision,...payload});invalidateAliasPreview();inventoryAICache={};inventoryOverrides={};inventoryTemplateOverrides={};resetInventory(false);await load();await loadAliases();notify(message+(result.saved!==undefined?'，新增 '+result.saved+' 个叫法':''));}
+  catch(e){notify(e.message,true);}finally{busy=false;if(aliasPreview)renderAliasPreview();updateAliasSelection();updateInventoryActions();}
+}
+function setAliasMode(mode){if(busy)return;aliasMode=mode;invalidateAliasPreview();$('alias-target-label').hidden=mode!=='single';$('alias-file-area').hidden=mode!=='table';$('alias-mode-single').setAttribute('aria-pressed',String(mode==='single'));$('alias-mode-table').setAttribute('aria-pressed',String(mode==='table'));$('alias-text').value='';$('alias-file').value='';$('alias-sheet-label').hidden=true;$('alias-text-label').firstChild.textContent=mode==='single'?'商品的不同叫法':'粘贴“叫法／对应类别”两列';$('alias-text').placeholder=mode==='single'?'皮箱\n旅行硬箱\n万向轮旅行箱':'叫法\t对应类别\n皮箱\t行李箱\n美容镜\t化妆镜';$('alias-input-hint').textContent=mode==='single'?'每行一个叫法，也可用逗号、顿号或分号分隔。一次最多 5000 个。':'每行一组，可从 Excel 复制两列，或填写带表头的 CSV。一次最多 5000 个叫法。';}
+$('alias-mode-single').addEventListener('click',()=>setAliasMode('single'));
+$('alias-mode-table').addEventListener('click',()=>setAliasMode('table'));
+for(const id of ['alias-target','alias-text'])$(id).addEventListener('input',invalidateAliasPreview);
+$('alias-file').addEventListener('change',()=>{invalidateAliasPreview();$('alias-sheet').replaceChildren();$('alias-sheet-label').hidden=true;});
+$('alias-sheet').addEventListener('change',()=>{invalidateAliasPreview();$('alias-form').requestSubmit();});
+$('alias-form').addEventListener('submit',async event=>{
+  event.preventDefault();if(busy)return;invalidateAliasPreview();const revision=aliasInputRevision;busy=true;$('alias-check').disabled=true;$('alias-check').textContent='正在检查…';
+  try{
+    const file=aliasMode==='table'&&$('alias-file').files[0];
+    if(aliasMode==='single'&&!$('alias-target').value.trim())throw new Error('请填写对应标准类别');
+    const result=file?await sendFile('/api/aliases/inspect',file,{sheet:$('alias-sheet').value||null}):await postJSON('/api/aliases/preview',{text:$('alias-text').value,category:aliasMode==='single'?$('alias-target').value.trim():''});
+    if(revision!==aliasInputRevision)return;
+    aliasPreview=result;
+    if(result.sheets){$('alias-sheet').replaceChildren(...result.sheets.map(value=>{const option=document.createElement('option');option.value=value;option.textContent=value;return option;}));$('alias-sheet').value=result.sheet;$('alias-sheet-label').hidden=result.sheets.length<2;}
+    $('alias-errors-only').checked=false;
+  }catch(e){notify(e.message,true);}finally{busy=false;$('alias-check').disabled=false;$('alias-check').textContent='检查归类';renderAliasPreview();}
+});
+$('alias-errors-only').addEventListener('change',renderAliasPreview);
+$('alias-save').addEventListener('click',()=>{if(aliasPreview?.can_save)aliasMutation('/api/aliases/save',{rows:aliasPreview.items.map(({alias,category})=>({alias,category})),revision:aliasPreview.revision},'归类已保存');});
+$('alias-search').addEventListener('input',renderAliases);
+$('alias-select-all').addEventListener('change',()=>{for(const row of aliasFiltered()){if($('alias-select-all').checked)aliasSelected.add(row.alias_key);else aliasSelected.delete(row.alias_key);}renderAliases();});
+$('alias-delete-selected').addEventListener('click',()=>{if(aliasSelected.size&&confirm('删除所选 '+aliasSelected.size+' 条归类？'))aliasMutation('/api/aliases/delete',{keys:[...aliasSelected]},'所选归类已删除');});
+$('alias-refresh').addEventListener('click',async()=>{if(busy)return;try{invalidateAliasPreview();await loadAliases();notify('归类库已刷新');}catch(e){notify(e.message,true);}});

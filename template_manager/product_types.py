@@ -52,5 +52,36 @@ def declared_types(template):
     return list(dict.fromkeys(p for p in raw if isinstance(p, str) and PRODUCT_TYPE_PATTERN.fullmatch(p)))[:MAX_PRODUCT_TYPES]
 
 
-def type_labels(template):
-    return {code: canonical_category(code) or code for code in declared_types(template)}
+def type_labels(template, resolver=None):
+    canonical = resolver.canonical if resolver else canonical_category
+    return {code: canonical(code) or code for code in declared_types(template)}
+
+
+class CategoryResolver:
+    """A request's immutable team rules, layered over the built-in dictionary."""
+    def __init__(self, rows=()):
+        self.rules = {norm(r['alias']): dict(r) for r in rows}
+        self.targets = {norm(r['category']): r['category'] for r in rows}
+        patterns = {}
+        for row in self.rules.values():
+            word = unicodedata.normalize('NFKC', row['alias']).casefold()
+            patterns[word] = row['category']
+        for category in self.targets.values():
+            patterns.setdefault(unicodedata.normalize('NFKC', category).casefold(), category)
+        self.words = patterns
+        self.pattern = re.compile('|'.join(
+            (r'(?<![a-z0-9])' + re.escape(w) + r'(?![a-z0-9])') if w.isascii() else re.escape(w)
+            for w in sorted(patterns, key=len, reverse=True))) if patterns else None
+
+    def canonical(self, value):
+        key = norm(value)
+        rule = self.rules.get(key)
+        return canonical_category(value) or (rule['category'] if rule else self.targets.get(key))
+
+    def exact_alias(self, value):
+        key = norm(value)
+        return self.rules.get(key) or ({'alias': self.targets[key], 'category': self.targets[key]} if key in self.targets else None)
+
+    def hits(self, text):
+        folded = unicodedata.normalize('NFKC', text).casefold()
+        return [(self.words[m.group()], m.group()) for m in self.pattern.finditer(folded)] if self.pattern else []

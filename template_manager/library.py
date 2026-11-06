@@ -71,6 +71,7 @@ def connect(root):
     db.execute('CREATE TABLE IF NOT EXISTS shop_registry (shop TEXT NOT NULL, marketplace TEXT NOT NULL, fingerprint TEXT NOT NULL, account_hint TEXT, PRIMARY KEY(shop,marketplace))')
     if 'seller_id' not in {r[1] for r in db.execute('PRAGMA table_info(shop_registry)')}:
         db.execute("ALTER TABLE shop_registry ADD COLUMN seller_id TEXT NOT NULL DEFAULT ''")
+    db.execute("CREATE TABLE IF NOT EXISTS product_aliases (alias_key TEXT PRIMARY KEY, alias TEXT NOT NULL, category TEXT NOT NULL, created_by TEXT NOT NULL, updated_at TEXT NOT NULL)")
     return db
 
 
@@ -113,6 +114,9 @@ def inspect_template(root, data, suffix):
     db = connect(Path(root))
     try:
         bound = db.execute('SELECT shop FROM shop_bindings WHERE fingerprint=?', (info.get('account_fingerprint', ''),)).fetchone()
+        from .product_types import CategoryResolver, type_labels
+        resolver = CategoryResolver([dict(r) for r in db.execute('SELECT * FROM product_aliases')])
+        info['product_type_labels'] = type_labels({'metadata': info}, resolver)
         return {'metadata': info, 'recognized_shop': bound['shop'] if bound else None}
     finally:
         db.close()
@@ -295,12 +299,14 @@ def run(a):
                 if len(z.infolist()) > 10000 or sum(i.file_size for i in z.infolist()) > 512 * 1024 * 1024:
                     raise ValueError('备份解压体积过大')
                 manifest = json.loads(z.read('manifest.json'))
-                if manifest.get('schema_version') not in (1, 2, 3, 4, 5, 6):
+                if manifest.get('schema_version') not in (1, 2, 3, 4, 5, 6, 7):
                     raise ValueError('不支持的备份版本')
                 db = connect(stage)
                 try:
                     from .roster import apply
                     apply(db, manifest.get('shop_registry', []), manifest.get('shop_bindings', []))
+                    from .aliases import restore as restore_aliases
+                    restore_aliases(db, manifest.get('product_aliases', []))
                     for row in manifest['templates']:
                         row = dict(row)
                         row.setdefault('shop', GLOBAL_SHOP)
@@ -377,6 +383,10 @@ def run(a):
                 validate_table_type(selected_type)
             rows = db.execute('SELECT * FROM templates ORDER BY created_at DESC').fetchall()
             decorated = [decorate(root, db, r) for r in rows if (not selected_type or r['table_type'] == selected_type) and (not a.marketplace or r['marketplace'] == a.marketplace.strip().upper()) and (not a.category or r['category'] == a.category) and (not getattr(a, 'shop', None) or r['shop'] == a.shop)]
+            from .product_types import CategoryResolver, type_labels
+            resolver = CategoryResolver([dict(r) for r in db.execute('SELECT * FROM product_aliases')])
+            for row in decorated:
+                row['metadata']['product_type_labels'] = type_labels(row, resolver)
             db.commit()
             return decorated
         if a.command == 'checkout':
@@ -403,7 +413,7 @@ def run(a):
                 raise ValueError('备份输出已存在')
             try:
                 with f, zipfile.ZipFile(f, 'w', zipfile.ZIP_DEFLATED) as z:
-                    z.writestr('manifest.json', json.dumps({'schema_version': 6, 'templates': rows, 'shop_registry': [dict(r) for r in db.execute('SELECT * FROM shop_registry')], 'shop_bindings': [dict(r) for r in db.execute('SELECT * FROM shop_bindings')]}, ensure_ascii=False))
+                    z.writestr('manifest.json', json.dumps({'schema_version': 7, 'product_aliases': [dict(r) for r in db.execute('SELECT * FROM product_aliases ORDER BY alias_key')], 'templates': rows, 'shop_registry': [dict(r) for r in db.execute('SELECT * FROM shop_registry')], 'shop_bindings': [dict(r) for r in db.execute('SELECT * FROM shop_bindings')]}, ensure_ascii=False))
                     for row in rows:
                         z.writestr('files/' + row['file'], verified(root, row))
             except Exception:
