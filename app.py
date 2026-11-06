@@ -145,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if path.path == '/api/templates':
                     q = parse_qs(path.query)
-                    self.send(self.call('list', marketplace=q.get('marketplace', [None])[0], category=q.get('category', [None])[0], shop=q.get('shop', [None])[0]))
+                    self.send(self.call('list', marketplace=q.get('marketplace', [None])[0], category=q.get('category', [None])[0], shop=q.get('shop', [None])[0], table_type=q.get('table_type', [None])[0]))
                 elif path.path == '/api/ai/settings':
                     self.send(self.server.ai.public())
                 elif path.path == '/api/shops':
@@ -168,7 +168,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.send({'error': '模板不存在'}, 404)
                         return
                     data = library.verified(self.root, row)
-                    self.send(data, mime='application/octet-stream', filename=row['original_name'])
+                    self.send(data, mime='application/octet-stream', filename=library.download_filename(row))
                 elif path.path in ('/', '/app.js', '/style.css'):
                     name = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}[path.path]
                     mime = {'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8'}[name]
@@ -232,6 +232,10 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     self.send(library.move_shop(self.root, body.get('id'), body.get('shop')))
                 return
+            if self.path == '/api/template/type':
+                with LOCK:
+                    self.send(library.change_table_type(self.root, body.get('id'), body.get('table_type')))
+                return
             if self.path == '/api/template/delete':
                 with LOCK:
                     self.send(library.delete_template(self.root,body.get('id')))
@@ -273,9 +277,9 @@ class Handler(BaseHTTPRequestHandler):
                 save_to_library = body.get('save_to_library', True)
                 download_zip = body.get('download_zip', True)
                 with LOCK:
-                    archive, report = batch.generate(self.root, data, name, body.get('shops'), body.get('category'), body.get('version'), save_to_library, create_archive=download_zip)
+                    archive, report = batch.generate(self.root, data, name, body.get('shops'), body.get('category'), body.get('version'), save_to_library, create_archive=download_zip, table_type=body.get('table_type', 'upload'))
                 if download_zip:
-                    self.send(archive, mime='application/zip', filename='同地区多店铺模板-'+report['marketplace']+'.zip', extra_headers={'X-Generated-Count': report['generated'], 'X-Saved-Count': report['saved'], 'X-Reused-Count': report['reused'], 'X-Failed-Count':report['failed']})
+                    self.send(archive, mime='application/zip', filename=report['archive_name'], extra_headers={'X-Generated-Count': report['generated'], 'X-Saved-Count': report['saved'], 'X-Reused-Count': report['reused'], 'X-Failed-Count':report['failed']})
                 else:
                     self.send(report)
                 return
@@ -291,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
                     with LOCK:
                         templates = self.call('list', marketplace=None, category=None)
                     tables = inventory.read_tables(data, name)
-                    report = inventory.analyze(data, name, body.get('marketplace', ''), templates, body.get('sheet'), body.get('header_row'), body.get('mapping'), body.get('category_overrides'), body.get('shop', library.GLOBAL_SHOP), tables=tables)
+                    report = inventory.analyze(data, name, body.get('marketplace', ''), templates, body.get('sheet'), body.get('header_row'), body.get('mapping'), body.get('category_overrides'), body.get('shop', library.GLOBAL_SHOP), tables=tables, table_type=body.get('table_type', 'upload'), template_overrides=body.get('template_overrides'))
                     if body.get('use_ai') is True:
                         if body.get('ai_consent') is not True:
                             raise ValueError('请先同意将本次分析涉及的商品资料发送到所选 AI 服务商')
@@ -315,6 +319,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self.path == '/api/upload':
                     meta = {k: str(body.get(k, '')).strip() for k in ('marketplace', 'category', 'version')}
                     meta['shop'] = str(body.get('shop', library.GLOBAL_SHOP)).strip()
+                    meta['table_type'] = library.validate_table_type(body.get('table_type', 'upload'))
                     if any(len(v) > 120 for v in meta.values()):
                         raise ValueError('站点、类目或版本过长')
                     self.send(self.call('add', source=str(source), **meta))

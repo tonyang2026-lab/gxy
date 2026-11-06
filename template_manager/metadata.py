@@ -7,6 +7,9 @@ import re
 from urllib.parse import parse_qs
 import xml.etree.ElementTree as ET
 import zipfile
+from .product_types import MAX_PRODUCT_TYPES, PRODUCT_TYPE_PATTERN, canonical_category
+
+PRODUCT_TYPES_VERSION = 2
 
 N = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 R = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'
@@ -55,12 +58,22 @@ def inspect(data, include_seller=False):
         result = {'account_fingerprint': hashlib.sha256(('amazon-contributor:'+contributor).encode()).hexdigest() if valid else '', 'account_hint': '…'+contributor[-5:] if valid else '', 'marketplace': MARKETS.get(raw.get('primaryMarketplaceId', '').split('.')[-1], ''), 'generated_at': raw.get('timestamp', ''), 'product_types': [], 'data_row': None, 'attribute_row': None, 'field_count': 0, 'has_prefilled_data': False}
         if include_seller and valid:
             result['seller_id']=contributor[len('amzn1.cr.o.'):]
-        try:
-            types = base64.b64decode(raw.get('ptds', ''), validate=True).decode()
-            parsed = json.loads(types) if types.startswith('[') else [types]
-            result['product_types'] = [p for p in parsed if isinstance(p, str) and re.fullmatch(r'[A-Z0-9_]{1,100}', p)][:30]
-        except (ValueError, UnicodeDecodeError, TypeError):
-            pass
+        result['product_type_warnings'] = []
+        if raw.get('ptds'):
+            try:
+                types = base64.b64decode(raw['ptds'], validate=True).decode().strip()
+                parsed = json.loads(types) if types.startswith('[') else [types]
+                if not isinstance(parsed, list):
+                    raise ValueError('not a list')
+                valid_types = list(dict.fromkeys(p for p in parsed if isinstance(p, str) and PRODUCT_TYPE_PATTERN.fullmatch(p)))
+                result['product_types'] = valid_types[:MAX_PRODUCT_TYPES]
+                if len(valid_types) > MAX_PRODUCT_TYPES:
+                    result['product_type_warnings'].append('模板声明商品类型超过 '+str(MAX_PRODUCT_TYPES)+' 种，仅使用前 '+str(MAX_PRODUCT_TYPES)+' 种，请人工核对其余类型')
+                if len(valid_types) != len(set(p for p in parsed if isinstance(p, str))) or any(not isinstance(p, str) for p in parsed):
+                    result['product_type_warnings'].append('部分商品类型格式无效，未用于匹配')
+            except (ValueError, UnicodeDecodeError, TypeError):
+                result['product_type_warnings'].append('模板声明的商品类型清单无法解析，请人工核对适用范围')
+        result['product_type_labels'] = {code: canonical_category(code) or code for code in result['product_types']}
         for field, key in [('data_row', 'dataRow'), ('attribute_row', 'attributeRow')]:
             if raw.get(key, '').isdigit() and 0 < int(raw[key]) < 10000:
                 result[field] = int(raw[key])

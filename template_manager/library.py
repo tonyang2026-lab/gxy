@@ -5,6 +5,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -13,11 +14,18 @@ import zipfile
 from . import metadata
 
 GLOBAL_SHOP = '通用模板'
-FIELDS = ('id', 'marketplace', 'category', 'version', 'original_name', 'sha256', 'file', 'created_at', 'shop')
+TABLE_TYPES = {'upload': '上传表格', 'price_update': '改价表格'}
+FIELDS = ('id', 'marketplace', 'category', 'version', 'original_name', 'sha256', 'file', 'created_at', 'shop', 'table_type')
+
+
+def validate_table_type(value):
+    if not isinstance(value, str) or value not in TABLE_TYPES:
+        raise ValueError('表格类型须选择上传表格或改价表格')
+    return value
 
 
 def schema(name):
-    return f'CREATE TABLE {name} (id TEXT PRIMARY KEY, marketplace TEXT, category TEXT, version TEXT, original_name TEXT, sha256 TEXT, file TEXT, created_at TEXT, shop TEXT NOT NULL, UNIQUE(shop,marketplace,category,version))'
+    return f"CREATE TABLE {name} (id TEXT PRIMARY KEY, marketplace TEXT, category TEXT, version TEXT, original_name TEXT, sha256 TEXT, file TEXT, created_at TEXT, shop TEXT NOT NULL, table_type TEXT NOT NULL DEFAULT 'upload' CHECK(table_type IN ('upload','price_update')), UNIQUE(shop,marketplace,category,version,table_type))"
 
 
 def digest(data):
@@ -44,11 +52,15 @@ def connect(root):
     existing = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='templates'").fetchone()
     if not existing:
         db.execute(schema('templates'))
-    elif 'shop' not in {r[1] for r in db.execute('PRAGMA table_info(templates)')}:
+    elif not {'shop', 'table_type'}.issubset({r[1] for r in db.execute('PRAGMA table_info(templates)')}):
         try:
             db.execute('BEGIN IMMEDIATE')
             db.execute(schema('templates_migrated'))
-            db.execute('INSERT INTO templates_migrated SELECT id,marketplace,category,version,original_name,sha256,file,created_at,? FROM templates', (GLOBAL_SHOP,))
+            columns = {r[1] for r in db.execute('PRAGMA table_info(templates)')}
+            shop_column = 'shop' if 'shop' in columns else '?'
+            type_column = 'table_type' if 'table_type' in columns else "'upload'"
+            params = () if 'shop' in columns else (GLOBAL_SHOP,)
+            db.execute('INSERT INTO templates_migrated SELECT id,marketplace,category,version,original_name,sha256,file,created_at,'+shop_column+','+type_column+' FROM templates', params)
             db.execute('DROP TABLE templates')
             db.execute('ALTER TABLE templates_migrated RENAME TO templates')
             db.commit()
@@ -77,15 +89,20 @@ def account_check(db, info, shop):
     db.execute('INSERT OR IGNORE INTO shop_bindings VALUES (?,?,?)', (fingerprint, shop, info.get('account_hint', '')))
 
 
+def metadata_json(info):
+    return json.dumps({**info, '_product_types_version': metadata.PRODUCT_TYPES_VERSION})
+
+
 def decorate(root, db, row):
     result = dict(row)
     found = db.execute('SELECT info FROM template_metadata WHERE id=?', (row['id'],)).fetchone()
-    if found:
-        info = json.loads(found['info'])
-    else:
+    info = json.loads(found['info']) if found else None
+    # Upgrade the cached index from original bytes, including declarations formerly truncated at 30.
+    if info is None or info.get('_product_types_version') != metadata.PRODUCT_TYPES_VERSION:
         info = metadata.inspect(verified(root, row))
-        db.execute('INSERT INTO template_metadata VALUES (?,?)', (row['id'], json.dumps(info)))
-    result['metadata'] = info
+        db.execute('INSERT OR REPLACE INTO template_metadata VALUES (?,?)', (row['id'], metadata_json(info)))
+    result['download_name'] = download_filename(row)
+    result['metadata'] = {k:v for k,v in info.items() if k != '_product_types_version'}
     result['account_scope_unknown'] = bool(info.get('account_fingerprint')) and row['shop'] == GLOBAL_SHOP
     return result
 
@@ -157,28 +174,48 @@ def delete_template(root, ident):
     return {**result,'id':ident,'filename':result['filenames'][0]}
 
 
+def template_filename(shop, marketplace, table_type, suffix):
+    table_type = validate_table_type(table_type)
+    if suffix.lower() not in ('.xlsx', '.xlsm'):
+        raise ValueError('表格文件扩展名无效')
+    shop = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', shop).strip(' .')[:80] or '未命名店铺'
+    marketplace = re.sub(r'[^A-Z0-9_-]', '_', marketplace.upper())[:12] or '未知地区'
+    return TABLE_TYPES[table_type]+'_'+shop+'_'+marketplace+suffix.lower()
+
+
+def download_filename(row):
+    row = dict(row)
+    return template_filename(row.get('shop', GLOBAL_SHOP), row['marketplace'], row.get('table_type', 'upload'), Path(row['file']).suffix)
+
+
+def unique_filename(name, used):
+    candidate = name
+    number = 2
+    while candidate.casefold() in used:
+        candidate = Path(name).stem+'_'+str(number)+Path(name).suffix
+        number += 1
+    used.add(candidate.casefold())
+    return candidate
+
+
 def download_templates(root, identifiers):
     import io
-    import re
-    if not isinstance(identifiers,list) or not 1<=len(identifiers)<=100 or any(not isinstance(ident,str) or not ident or len(ident)>200 for ident in identifiers) or len(set(identifiers))!=len(identifiers):
-        raise ValueError('请选择 1–100 份不同表格；也可逐类别单独下载')
+    if not isinstance(identifiers,list) or not 1<=len(identifiers)<=1000 or any(not isinstance(ident,str) or not ident or len(ident)>200 for ident in identifiers) or len(set(identifiers))!=len(identifiers):
+        raise ValueError('请选择 1–1000 份不同表格；可减少勾选后分批下载')
     root=Path(root);db=connect(root)
     try:
-        files=[];total=0
+        files=[];total=0;used=set()
         for ident in identifiers:
             row=db.execute('SELECT * FROM templates WHERE id=?',(ident,)).fetchone()
             if row is None:raise ValueError('对应模板已被删除，请重新识别后下载')
             raw=verified(root,row);total+=len(raw)
-            if total>100*1024*1024:raise ValueError('表格合计超过 100 MB，请逐类别下载')
-            name=re.sub(r'[^\w .()-]','_',row['original_name'].replace('\\','/').rsplit('/',1)[-1])
-            suffix=Path(row['file']).suffix
-            if not name.lower().endswith(suffix.lower()):name+=suffix
-            name=Path(name).stem[:110]+Path(name).suffix
+            if total>100*1024*1024:raise ValueError('表格合计超过 100 MB，请减少勾选后分批下载')
+            name=unique_filename(download_filename(row),used)
             files.append((ident,name,raw))
         if len(files)==1:return files[0][2],files[0][1]
         out=io.BytesIO()
         with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
-            for ident,name,raw in files:z.writestr(hashlib.sha256(ident.encode()).hexdigest()[:12]+'_'+name,raw)
+            for ident,name,raw in files:z.writestr(name,raw)
         return out.getvalue(),'对应类别表格.zip'
     finally:db.close()
 
@@ -208,7 +245,7 @@ def move_shop(root, ident, shop):
             for row_id in ids:
                 db.execute('UPDATE templates SET shop=? WHERE id=?', (shop.strip(), row_id))
         except sqlite3.IntegrityError:
-            raise ValueError('目标店铺已有同站点、类目和版本，未覆盖任何模板') from None
+            raise ValueError('目标店铺已有同表格类型、站点、类目和版本，未覆盖任何模板') from None
         if fingerprint:
             db.execute('INSERT OR REPLACE INTO shop_bindings VALUES (?,?,?)', (fingerprint, shop.strip(), info.get('account_hint', '')))
             try:
@@ -219,6 +256,28 @@ def move_shop(root, ident, shop):
         row['moved_count'] = len(ids)
         db.commit()
         return row
+    finally:
+        db.close()
+
+
+def change_table_type(root, ident, table_type):
+    table_type = validate_table_type(table_type)
+    db = connect(Path(root))
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT * FROM templates WHERE id=?', (ident,)).fetchone()
+        if row is None:
+            raise ValueError('模板不存在')
+        try:
+            db.execute('UPDATE templates SET table_type=? WHERE id=?', (table_type, ident))
+        except sqlite3.IntegrityError:
+            raise ValueError('目标类型已有同店铺、站点、类目和版本，请先使用新的版本标签；未覆盖文件') from None
+        result = dict(db.execute('SELECT * FROM templates WHERE id=?', (ident,)).fetchone())
+        db.commit()
+        return result
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -236,7 +295,7 @@ def run(a):
                 if len(z.infolist()) > 10000 or sum(i.file_size for i in z.infolist()) > 512 * 1024 * 1024:
                     raise ValueError('备份解压体积过大')
                 manifest = json.loads(z.read('manifest.json'))
-                if manifest.get('schema_version') not in (1, 2, 3, 4, 5):
+                if manifest.get('schema_version') not in (1, 2, 3, 4, 5, 6):
                     raise ValueError('不支持的备份版本')
                 db = connect(stage)
                 try:
@@ -245,6 +304,8 @@ def run(a):
                     for row in manifest['templates']:
                         row = dict(row)
                         row.setdefault('shop', GLOBAL_SHOP)
+                        row.setdefault('table_type', 'upload')
+                        validate_table_type(row['table_type'])
                         if not isinstance(row['shop'], str) or not row['shop'].strip() or len(row['shop']) > 120:
                             raise ValueError('备份店铺名称无效')
                         name = row['file']
@@ -258,8 +319,8 @@ def run(a):
                         if row['shop'] != GLOBAL_SHOP:
                             account_check(db, info, row['shop'])
                         write_new(stage / 'files' / name, data)
-                        db.execute('INSERT INTO templates VALUES (?,?,?,?,?,?,?,?,?)', tuple(row[k] for k in FIELDS))
-                        db.execute('INSERT INTO template_metadata VALUES (?,?)', (row['id'], json.dumps(info)))
+                        db.execute('INSERT INTO templates VALUES (?,?,?,?,?,?,?,?,?,?)', tuple(row[k] for k in FIELDS))
+                        db.execute('INSERT INTO template_metadata VALUES (?,?)', (row['id'], metadata_json(info)))
                     db.commit()
                 finally:
                     db.close()
@@ -268,6 +329,7 @@ def run(a):
     db = connect(root)
     try:
         if a.command == 'add':
+            table_type = validate_table_type(getattr(a, 'table_type', 'upload'))
             source = Path(a.source)
             data = source.read_bytes()
             workbook(data, source.suffix)
@@ -287,21 +349,21 @@ def run(a):
             if info.get('marketplace') in ('AE','SA') and source_seller.startswith('A') and source_seller.isalnum():
                 from .roster import apply
                 apply(db,[{'shop':shop,'marketplace':market,'fingerprint':info['account_fingerprint'],'account_hint':info['account_hint'],'seller_id':source_seller}])
-            old = db.execute('SELECT * FROM templates WHERE shop=? AND marketplace=? AND category=? AND version=?', (shop, market, category, version)).fetchone()
+            old = db.execute('SELECT * FROM templates WHERE shop=? AND marketplace=? AND category=? AND version=? AND table_type=?', (shop, market, category, version, table_type)).fetchone()
             if old:
                 if old['sha256'] != digest(data):
-                    raise ValueError('版本已存在且内容不同；请使用新的版本标签')
+                    raise ValueError('该表格类型的版本已存在且内容不同；请使用新的版本标签')
                 verified(root, old)
                 db.commit()
                 return {'reused': True, **dict(old)}
             ident = uuid.uuid4().hex
             name = ident + source.suffix.lower()
-            row = (ident, market, category, version, source.name, digest(data), name, datetime.datetime.now(datetime.timezone.utc).isoformat(), shop)
+            row = (ident, market, category, version, source.name, digest(data), name, datetime.datetime.now(datetime.timezone.utc).isoformat(), shop, table_type)
             write_new(root / 'files' / name, data)
             try:
-                db.execute('INSERT INTO templates VALUES (?,?,?,?,?,?,?,?,?)', row)
+                db.execute('INSERT INTO templates VALUES (?,?,?,?,?,?,?,?,?,?)', row)
                 stored = db.execute('SELECT * FROM templates WHERE id=?', (ident,)).fetchone()
-                db.execute('INSERT INTO template_metadata VALUES (?,?)', (ident, json.dumps(info)))
+                db.execute('INSERT INTO template_metadata VALUES (?,?)', (ident, metadata_json(info)))
                 verified(root, stored)
                 db.commit()
             except Exception:
@@ -310,8 +372,11 @@ def run(a):
                 raise
             return dict(stored)
         if a.command == 'list':
+            selected_type = getattr(a, 'table_type', None)
+            if selected_type is not None:
+                validate_table_type(selected_type)
             rows = db.execute('SELECT * FROM templates ORDER BY created_at DESC').fetchall()
-            decorated = [decorate(root, db, r) for r in rows if (not a.marketplace or r['marketplace'] == a.marketplace.strip().upper()) and (not a.category or r['category'] == a.category) and (not getattr(a, 'shop', None) or r['shop'] == a.shop)]
+            decorated = [decorate(root, db, r) for r in rows if (not selected_type or r['table_type'] == selected_type) and (not a.marketplace or r['marketplace'] == a.marketplace.strip().upper()) and (not a.category or r['category'] == a.category) and (not getattr(a, 'shop', None) or r['shop'] == a.shop)]
             db.commit()
             return decorated
         if a.command == 'checkout':
@@ -338,7 +403,7 @@ def run(a):
                 raise ValueError('备份输出已存在')
             try:
                 with f, zipfile.ZipFile(f, 'w', zipfile.ZIP_DEFLATED) as z:
-                    z.writestr('manifest.json', json.dumps({'schema_version': 5, 'templates': rows, 'shop_registry': [dict(r) for r in db.execute('SELECT * FROM shop_registry')], 'shop_bindings': [dict(r) for r in db.execute('SELECT * FROM shop_bindings')]}, ensure_ascii=False))
+                    z.writestr('manifest.json', json.dumps({'schema_version': 6, 'templates': rows, 'shop_registry': [dict(r) for r in db.execute('SELECT * FROM shop_registry')], 'shop_bindings': [dict(r) for r in db.execute('SELECT * FROM shop_bindings')]}, ensure_ascii=False))
                     for row in rows:
                         z.writestr('files/' + row['file'], verified(root, row))
             except Exception:
@@ -358,10 +423,12 @@ def main():
     for field in ('marketplace', 'category', 'version'):
         add.add_argument('--' + field, required=True)
     add.add_argument('--shop', default=GLOBAL_SHOP)
+    add.add_argument('--table-type', choices=TABLE_TYPES, default='upload')
     ls = sub.add_parser('list')
     ls.add_argument('--marketplace')
     ls.add_argument('--category')
     ls.add_argument('--shop')
+    ls.add_argument('--table-type', choices=TABLE_TYPES)
     co = sub.add_parser('checkout')
     co.add_argument('id')
     co.add_argument('output')
