@@ -1,4 +1,5 @@
 """Generate same-marketplace copies, changing only Template!A1 contributorId."""
+import datetime
 import io
 import json
 from pathlib import Path
@@ -119,15 +120,31 @@ def safe_name(value):
     return value
 
 
-def generate(root, data, filename, shops, category, version, save_to_library=True, create_archive=True, table_type="upload"):
+def version_base():
+    today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).date()
+    return today.isoformat() + '-批量'
+
+
+def next_version(existing, shops, marketplace, category, table_type):
+    base = version_base()
+    used = {key[3] for key in existing if key[0] in shops and key[1] == marketplace and key[2] == category and key[4] == table_type}
+    numbers = [1 if value == base else int(value[len(base)+1:]) for value in used
+               if value == base or re.fullmatch(re.escape(base) + r'-[0-9]{1,9}', value)]
+    number = max(numbers, default=0) + 1
+    return base if number == 1 else base + '-' + str(number).zfill(2)
+
+
+def generate(root, data, filename, shops, category, version, save_to_library=True, create_archive=True, table_type="upload", auto_version=False):
     table_type = library.validate_table_type(table_type)
+    if type(auto_version) is not bool:
+        raise ValueError('自动版本编号须为有效的开关值')
     if type(save_to_library) is not bool or type(create_archive) is not bool:
         raise ValueError('保存和下载选项须为有效的开关值')
     if not save_to_library and not create_archive:
         raise ValueError('请至少选择保存到模板库或下载 ZIP')
     if not isinstance(shops, list) or not 1 <= len(shops) <= 50 or not all(isinstance(s, str) for s in shops) or len(set(shops)) != len(shops):
         raise ValueError('请选择 1–50 家不同的目标店铺')
-    if not isinstance(category, str) or not category.strip() or len(category) > 120 or not isinstance(version, str) or not version.strip() or len(version) > 120:
+    if not isinstance(category, str) or not category.strip() or len(category) > 120 or (not auto_version and (not isinstance(version, str) or not version.strip() or len(version) > 120)):
         raise ValueError('类目和版本须为 1–120 字')
     suffix = Path(filename).suffix.lower()
     library.workbook(data, suffix)
@@ -141,6 +158,8 @@ def generate(root, data, filename, shops, category, version, save_to_library=Tru
         existing = {(r['shop'],r['marketplace'],r['category'],r['version'],r['table_type']): r['sha256'] for r in db.execute('SELECT * FROM templates')}
     finally:
         db.close()
+    if auto_version:
+        version = next_version(existing, shops, marketplace, category.strip(), table_type)
     plans = []
     total = 0
     used_names = set()
@@ -157,7 +176,7 @@ def generate(root, data, filename, shops, category, version, save_to_library=Tru
             raise ValueError('“'+shop+'”已有同表格类型、站点、类目、版本的不同文件，请更换批量版本标签；尚未入库')
         name = library.unique_filename(library.template_filename(shop, marketplace, table_type, suffix), used_names)
         plans.append({'shop':shop, 'output_name':name, 'data':output, 'audit':audit, 'sha256':sha, 'account_hint':target['account_hint']})
-    report = {'table_type':table_type, 'table_type_label':library.TABLE_TYPES[table_type], 'source':filename, 'source_sha256':library.digest(data), 'marketplace':marketplace, 'category':category.strip(), 'version':version.strip(), 'generated':len(plans), 'saved':0, 'reused':0, 'failed':0, 'save_requested':save_to_library, 'download_requested':create_archive, 'items':[], 'notes':['仅替换主 Template!A1 contributorId；保留原模板的站点、字段、商品数据、宏及其他元数据，包括来源偏好设置。', '只生成同主站点副本，不把 AE 模板转换成 SA 模板。', '本地结构与目标标识检查不代表亚马逊接受；各店铺处理结果需以亚马逊报告为准。']}
+    report = {'auto_version':auto_version, 'table_type':table_type, 'table_type_label':library.TABLE_TYPES[table_type], 'source':filename, 'source_sha256':library.digest(data), 'marketplace':marketplace, 'category':category.strip(), 'version':version.strip(), 'generated':len(plans), 'saved':0, 'reused':0, 'failed':0, 'save_requested':save_to_library, 'download_requested':create_archive, 'items':[], 'notes':['仅替换主 Template!A1 contributorId；保留原模板的站点、字段、商品数据、宏及其他元数据，包括来源偏好设置。', '只生成同主站点副本，不把 AE 模板转换成 SA 模板。', '本地结构与目标标识检查不代表亚马逊接受；各店铺处理结果需以亚马逊报告为准。']}
     archive_shop = shops[0] if len(shops) == 1 else '多店铺'
     report['archive_name'] = Path(library.template_filename(archive_shop, marketplace, table_type, suffix)).stem+'.zip'
     if info.get('has_prefilled_data'):

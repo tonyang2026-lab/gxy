@@ -298,9 +298,9 @@ class Handler(BaseHTTPRequestHandler):
                 save_to_library = body.get('save_to_library', True)
                 download_zip = body.get('download_zip', True)
                 with LOCK:
-                    archive, report = batch.generate(self.root, data, name, body.get('shops'), body.get('category'), body.get('version'), save_to_library, create_archive=download_zip, table_type=body.get('table_type', 'upload'))
+                    archive, report = batch.generate(self.root, data, name, body.get('shops'), body.get('category'), body.get('version'), save_to_library, create_archive=download_zip, table_type=body.get('table_type', 'upload'), auto_version=body.get('auto_version', False))
                 if download_zip:
-                    self.send(archive, mime='application/zip', filename=report['archive_name'], extra_headers={'X-Generated-Count': report['generated'], 'X-Saved-Count': report['saved'], 'X-Reused-Count': report['reused'], 'X-Failed-Count':report['failed']})
+                    self.send(archive, mime='application/zip', filename=report['archive_name'], extra_headers={'X-Generated-Count': report['generated'], 'X-Saved-Count': report['saved'], 'X-Reused-Count': report['reused'], 'X-Failed-Count':report['failed'], 'X-Batch-Version':quote(report['version'], safe='')})
                 else:
                     self.send(report)
                 return

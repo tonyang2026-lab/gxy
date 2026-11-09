@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const UI_REVISION='批量别名版 1106.1';
+const UI_REVISION='自动版本版 1109.1';
 const TABLE_TYPES={upload:'上传表格',price_update:'改价表格'};
 ensureInventoryShopPicker();
 let templates = [];
@@ -98,7 +98,7 @@ async function load() {
   $('total').textContent=templates.length;$('markets').textContent=new Set(templates.map(t=>t.marketplace)).size;$('categories').textContent=new Set(templates.map(t=>t.category)).size;
   const selected=$('filter-market').value;$('filter-market').replaceChildren(new Option('全部站点',''));
   [...new Set(['AE','SA',...templates.map(t=>t.marketplace)])].sort().forEach(m=>$('filter-market').add(new Option(m,m)));
-  $('filter-market').value=selected;const selectedShop=$('filter-shop').value;const shops=[...new Set(['通用模板',...registeredShops,...templates.map(t=>t.shop||'通用模板')])].sort();$('filter-shop').replaceChildren(new Option('全部店铺',''),...shops.map(shop=>new Option(shop,shop)));$('filter-shop').value=selectedShop;$('shop-options').replaceChildren(...shops.map(shop=>new Option(shop,shop)));inventoryShopNames=shops;updateInventoryShopOptions();for(const [id,field,label] of [['filter-category','category','全部类别'],['filter-version','version','全部版本']]){const value=$(id).value;$(id).replaceChildren(new Option(label,''),...[...new Set(field==='category'?templates.flatMap(templateCategories):templates.map(t=>t[field]))].sort().map(item=>new Option(item,item)));$(id).value=value;}render();
+  $('filter-market').value=selected;const selectedShop=$('filter-shop').value;const shops=[...new Set(['通用模板',...registeredShops,...templates.map(t=>t.shop||'通用模板')])].sort();$('filter-shop').replaceChildren(new Option('全部店铺',''),...shops.map(shop=>new Option(shop,shop)));$('filter-shop').value=selectedShop;$('shop-options').replaceChildren(...shops.map(shop=>new Option(shop,shop)));inventoryShopNames=shops;updateInventoryShopOptions();for(const [id,field,label] of [['filter-category','category','全部类别'],['filter-version','version','全部版本']]){const value=$(id).value;$(id).replaceChildren(new Option(label,''),...[...new Set(field==='category'?templates.flatMap(templateCategories):templates.map(t=>t[field]))].sort().map(item=>new Option(item,item)));$(id).value=value;}render();updateBatchVersion();
 }
 async function encoded(file,maxMB=32) {
   if(file.size>maxMB*1024*1024)throw new Error('当前文件 '+(file.size/1024/1024).toFixed(1)+' MB，超过此操作 '+maxMB+' MB 上限');
@@ -372,10 +372,30 @@ $('file').addEventListener('change',async()=>{
 $('logout').addEventListener('click',()=>{$('shop-roster-text').value='';$('shop-roster-status').textContent='';});
 
 let batchFile=null,batchSource=null,batchReading=false,batchReadSequence=0,batchLastResult=null,batchDownloading=false;
-$('batch-version').value=$('version').value+'-批量';
+function batchDateBase(){
+  const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
+  const value=Object.fromEntries(parts.map(part=>[part.type,part.value]));return value.year+'-'+value.month+'-'+value.day+'-批量';
+}
+function batchRequestSignature(){return JSON.stringify([batchSource?.metadata.marketplace,$('batch-table-type').value,$('batch-category').value.trim(),[...$('batch-targets').querySelectorAll('input:checked')].map(c=>c.value).sort(),batchMode()!=='download']);}
+function batchRetry(){return batchLastResult?.report.failed>0&&batchLastResult.sourceFile===$('batch-file').files[0]&&batchLastResult.requestSignature===batchRequestSignature();}
+function updateBatchVersion(){
+  const automatic=$('batch-auto-version').checked;$('batch-version').readOnly=automatic;
+  if(!automatic){$('batch-version-help').textContent='自定义版本：同店铺、地区、类目和表格类型的同版本不同内容会提示冲突。';return;}
+  if(batchRetry()){$('batch-version').value=batchLastResult.report.version;$('batch-version-help').textContent='本批有入库失败项，重试沿用此版本，已成功的店铺会复用。';return;}
+  const base=batchDateBase(),shops=new Set([...$('batch-targets').querySelectorAll('input:checked')].map(c=>c.value)),market=batchSource?.metadata.marketplace,category=$('batch-category').value.trim(),kind=$('batch-table-type').value;
+  let highest=0;
+  for(const t of templates){if(!shops.has(t.shop)||t.marketplace!==market||t.category!==category||(t.table_type||'upload')!==kind)continue;if(t.version===base)highest=Math.max(highest,1);else if(t.version.startsWith(base+'-')&&/^[0-9]{1,9}$/.test(t.version.slice(base.length+1)))highest=Math.max(highest,Number(t.version.slice(base.length+1)));}
+  $('batch-version').value=highest?base+'-'+String(highest+1).padStart(2,'0'):base;
+  $('batch-version-help').textContent='同一天连续生成自动递增为 -02、-03；多人同时操作时以生成结果中的实际版本为准。取消勾选可自定义。';
+}
+$('batch-version').value=batchDateBase();
+$('batch-auto-version').addEventListener('change',updateBatchVersion);
+$('batch-category').addEventListener('input',updateBatchVersion);
+$('batch-table-type').addEventListener('change',updateBatchControls);
 const batchModeLabels={library:'生成并保存到模板库',both:'生成、保存并下载 ZIP',download:'生成并下载 ZIP'};
 function batchMode(){return document.querySelector('input[name="batch-output"]:checked')?.value||'library';}
 function updateBatchControls(){
+  updateBatchVersion();
   const available=[...$('batch-targets').querySelectorAll('input:not(:disabled)')],selected=available.filter(c=>c.checked);
   $('batch-selection-count').textContent=batchSource?'已选 '+selected.length+' / '+available.length+' 家店铺':'尚未读取店铺';
   $('batch-select-all').disabled=busy||batchReading||!available.length;$('batch-clear-all').disabled=busy||batchReading||!selected.length;
@@ -428,10 +448,11 @@ $('batch-form').addEventListener('submit',async e=>{
   e.preventDefault();if(busy||batchReading){notify('请等待当前操作完成',true);return;}
   const file=$('batch-file').files[0];if(file!==batchFile||!batchSource){notify('请先读取有效源模板',true);return;}
   const shops=[...$('batch-targets').querySelectorAll('input:checked')].map(c=>c.value);if(!shops.length){notify('请选择至少一家同地区目标店铺',true);return;}
+  updateBatchVersion();const signature=batchRequestSignature(),automatic=$('batch-auto-version').checked&&!batchRetry();
   const mode=batchMode(),marketplace=batchSource.metadata.marketplace;
   busy=true;const controls=[...$('batch-form').querySelectorAll('input,select,button')];const states=controls.map(c=>c.disabled);controls.forEach(c=>c.disabled=true);$('batch-submit').textContent='正在生成和校验…';
   try{
-    const payload={table_type:$('batch-table-type').value,filename:file.name,data:await encoded(file),shops,category:$('batch-category').value,version:$('batch-version').value,save_to_library:mode!=='download',download_zip:mode!=='library'};
+    const payload={table_type:$('batch-table-type').value,filename:file.name,data:await encoded(file),shops,category:$('batch-category').value,version:$('batch-version').value,auto_version:automatic,save_to_library:mode!=='download',download_zip:mode!=='library'};
     const response=await fetch('/api/template/batch',{method:'POST',headers:{'Content-Type':'application/json','X-Template-Request':'1'},body:JSON.stringify(payload)});
     if(!response.ok){const error=await response.json();throw new Error(error.error||'生成失败');}
     let result;
@@ -439,11 +460,11 @@ $('batch-form').addEventListener('submit',async e=>{
       if(!(response.headers.get('Content-Type')||'').includes('application/json'))throw new Error('服务器仍是旧版本，请完整覆盖新版程序并重启后重试');
       result={report:await response.json(),blob:null};
     }else{
-      const blob=await response.blob(),report={marketplace,table_type:payload.table_type,category:payload.category.trim(),version:payload.version.trim(),save_requested:payload.save_to_library};
+      const blob=await response.blob(),report={marketplace,table_type:payload.table_type,category:payload.category.trim(),version:response.headers.get('X-Batch-Version')?decodeURIComponent(response.headers.get('X-Batch-Version')):payload.version.trim(),save_requested:payload.save_to_library};
       for(const [field,header] of [['generated','Generated'],['saved','Saved'],['reused','Reused'],['failed','Failed']])report[field]=Number(response.headers.get('X-'+header+'-Count'));
       const disposition=(response.headers.get('Content-Disposition')||'').match(/filename\*=UTF-8''([^;]+)/i);result={report,blob,filename:disposition?decodeURIComponent(disposition[1]):TABLE_TYPES[payload.table_type]+'_多店铺_'+marketplace+'.zip'};saveDownloadBlob(blob,result.filename);
     }
-    renderBatchResult(result);
+    result.sourceFile=file;result.requestSignature=signature;renderBatchResult(result);
     if(payload.save_to_library){try{await load();}catch(error){notify('生成已完成；模板库列表刷新失败，请稍后刷新查看',true);return;}}
     notify(result.report.failed?'部分入库失败，请查看本次结果':mode==='library'?'已保存到模板库，需要时再下载':'批量生成完成，ZIP 内附生成报告',result.report.failed>0);
   }catch(err){notify(err.message,true);}finally{busy=false;controls.forEach((c,i)=>c.disabled=states[i]);updateBatchControls();}
